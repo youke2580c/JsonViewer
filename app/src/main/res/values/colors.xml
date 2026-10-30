@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- 品牌色 -->
+    <color name="brand">#2E6BE6</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="white_70">#B3CCF5</color>
+    <color name="ic_launcher_background">#607D8B</color>
+
+    <!-- JSON 语法着色（浅色） -->
+    <color name="json_key">#7C3AED</color>
+    <color name="json_string">#0B7A4B</color>
+    <color name="json_number">#B45309</color>
+    <color name="json_boolean">#DC2626</color>
+    <color name="json_null">#6B7280</color>
+    <color name="json_punct">#9CA3AF</color>
+
+    <!-- 编辑器 -->
+    <color name="editor_gutter">#EEF1F5</color>
+    <color name="editor_gutter_text">#98A2B3</color>
+    <color name="editor_text">#1F2933</color>
+    <color name="editor_error_line">#FDE2E2</color>
+    <color name="editor_error_column">#FCA5A5</color>
+
+    <!-- 搜索高亮 -->
+    <color name="search_match">#FDE68A</color>
+    <color name="search_current">#F59E0B</color>
+
+    <!-- 树 -->
+    <color name="tree_selected">#D6E4FF</color>
+    <color name="tree_flash">#FEF08A</color>
+
+    <!-- 文件夹图标：对象=蓝，数组=橙，用以区分容器类型 -->
+    <color name="folder_object">#2E6BE6</color>
+    <color name="folder_array">#E08600</color>
+
+    <!-- 错误横幅 -->
+    <color name="error_banner_bg">#FEF2F2</color>
+    <color name="error_banner_text">#B91C1C</color>
+    <color name="error_banner_detail">#7F1D1D</color>
+
+</resources>

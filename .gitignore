@@ -1,0 +1,16 @@
+# Gradle / Android 构建产物
+build/
+.gradle/
+.kotlin/
+local.properties
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+.DS_Store
+
+# 签名密钥（自行生成后放工程根目录，不要提交）
+release.jks
+*.jks
+*.keystore

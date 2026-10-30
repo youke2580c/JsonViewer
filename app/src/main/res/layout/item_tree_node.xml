@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  树节点：参照「Json精灵」版式
+  第一行：展开箭头 + 键名（粗体，中间省略）+ 右侧三点菜单
+  第二行：值（完整展示，自动换行，超长截断提示）+ 类型/数量元信息
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="?attr/selectableItemBackground"
+    android:orientation="vertical"
+    android:paddingTop="7dp"
+    android:paddingBottom="7dp">
+
+    <!-- 第一行：键名 -->
+    <LinearLayout
+        android:id="@+id/keyRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:minHeight="24dp"
+        android:orientation="horizontal"
+        android:paddingStart="10dp"
+        android:paddingEnd="4dp">
+
+        <ImageView
+            android:id="@+id/folderIcon"
+            android:layout_width="18dp"
+            android:layout_height="18dp"
+            android:layout_marginEnd="6dp"
+            android:contentDescription="容器"
+            android:src="@drawable/ic_folder"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/key"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:ellipsize="middle"
+            android:singleLine="true"
+            android:textColor="@color/json_key"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <ImageButton
+            android:id="@+id/dots"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="节点操作菜单"
+            android:padding="6dp"
+            android:src="@drawable/ic_dots"
+            app:tint="@color/json_null" />
+    </LinearLayout>
+
+    <!-- 第二行：值 + 元信息 -->
+    <LinearLayout
+        android:id="@+id/valueRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="top"
+        android:orientation="horizontal"
+        android:paddingStart="32dp"
+        android:paddingEnd="10dp">
+
+        <TextView
+            android:id="@+id/value"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="12"
+            android:textColor="@color/editor_text"
+            android:textIsSelectable="false"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/meta"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:singleLine="true"
+            android:textColor="@color/json_null"
+            android:textSize="11sp" />
+    </LinearLayout>
+
+</LinearLayout>

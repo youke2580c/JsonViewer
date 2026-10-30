@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- 品牌色（深色模式） -->
+    <color name="brand">#3B82F6</color>
+    <color name="ic_launcher_background">#2E6BE6</color>
+
+    <!-- JSON 语法着色（深色） -->
+    <color name="json_key">#C4B5FD</color>
+    <color name="json_string">#6EE7B7</color>
+    <color name="json_number">#FCD34D</color>
+    <color name="json_boolean">#FCA5A5</color>
+    <color name="json_null">#9CA3AF</color>
+    <color name="json_punct">#6B7280</color>
+
+    <!-- 编辑器 -->
+    <color name="editor_gutter">#1A1F26</color>
+    <color name="editor_gutter_text">#7A8494</color>
+    <color name="editor_text">#D5DAE1</color>
+    <color name="editor_error_line">#442222</color>
+    <color name="editor_error_column">#7F1D1D</color>
+
+    <!-- 搜索高亮 -->
+    <color name="search_match">#4A3B12</color>
+    <color name="search_current">#B45309</color>
+
+    <!-- 树 -->
+    <color name="tree_selected">#1E3A5F</color>
+    <color name="tree_flash">#54460F</color>
+
+    <!-- 文件夹图标：对象=蓝，数组=橙，用以区分容器类型 -->
+    <color name="folder_object">#6AA0FF</color>
+    <color name="folder_array">#F0A93C</color>
+
+    <!-- 错误横幅 -->
+    <color name="error_banner_bg">#3B1512</color>
+    <color name="error_banner_text">#FCA5A5</color>
+    <color name="error_banner_detail">#FECACA</color>
+
+</resources>

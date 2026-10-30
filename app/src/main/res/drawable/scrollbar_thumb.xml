@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 滚动条：触摸区 18dp（View 宽度），可视条 14dp（左右各内缩 2dp） -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:left="2dp"
+        android:right="2dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#808080" />
+            <corners android:radius="7dp" />
+        </shape>
+    </item>
+</layer-list>

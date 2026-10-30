@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 分享文件只暴露 cache/share/ 目录，且每次只保留最新一份 -->
+<paths>
+    <cache-path
+        name="share"
+        path="share/" />
+</paths>

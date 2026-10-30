@@ -1,0 +1,503 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.drawerlayout.widget.DrawerLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/drawerLayout"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+    <!-- 错误横幅：两种模式下都可见，点击跳转到出错位置 -->
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/errorBanner"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginTop="8dp"
+        android:layout_marginEnd="12dp"
+        android:visibility="gone"
+        app:cardBackgroundColor="@color/error_banner_bg"
+        app:cardCornerRadius="12dp"
+        app:cardElevation="0dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="12dp">
+
+            <TextView
+                android:id="@+id/errorTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:singleLine="true"
+                android:textColor="@color/error_banner_text"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/errorDetail"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:textColor="@color/error_banner_detail"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/tvErrorHint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="点击跳转到出错位置"
+                android:textColor="@color/error_banner_detail"
+                android:textSize="11sp" />
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+
+    <FrameLayout
+        android:id="@+id/content"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <!-- 代码模式 -->
+        <LinearLayout
+            android:id="@+id/codePanel"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:id="@+id/searchRowCode"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:background="@color/editor_gutter"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="8dp"
+                android:paddingEnd="4dp"
+                android:visibility="gone">
+
+                <EditText
+                    android:id="@+id/searchInputCode"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:background="@null"
+                    android:hint="搜索键名或值"
+                    android:imeOptions="actionSearch"
+                    android:inputType="text"
+                    android:singleLine="true"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/searchCountCode"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minWidth="44dp"
+                    android:gravity="center"
+                    android:text="0/0"
+                    android:textColor="@color/json_null"
+                    android:textSize="12sp" />
+
+                <ImageButton
+                    android:id="@+id/searchPrevCode"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="上一个"
+                    android:src="@drawable/ic_arrow_up"
+                    app:tint="@color/json_null" />
+
+                <ImageButton
+                    android:id="@+id/searchNextCode"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="下一个"
+                    android:src="@drawable/ic_arrow_down"
+                    app:tint="@color/json_null" />
+
+                <ImageButton
+                    android:id="@+id/searchCloseCode"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="关闭搜索"
+                    android:src="@drawable/ic_close"
+                    app:tint="@color/json_null" />
+            </LinearLayout>
+
+            <com.guaner.jsonviewer.ui.CodeEditorView
+                android:id="@+id/editorView"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+        </LinearLayout>
+
+        <!-- 表单（树状）模式 -->
+        <LinearLayout
+            android:id="@+id/formPanel"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <!-- 当前节点路径面包屑 + 返回父节点 + 复制 + 元素计数 -->
+            <LinearLayout
+                android:id="@+id/breadcrumbRow"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:background="@color/editor_gutter"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp">
+
+                <ImageButton
+                    android:id="@+id/breadcrumbBack"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="返回父节点"
+                    android:src="@drawable/ic_chevron_left"
+                    app:tint="@color/brand" />
+
+                <HorizontalScrollView
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:scrollbars="none">
+
+                    <LinearLayout
+                        android:id="@+id/breadcrumbChips"
+                        android:layout_width="wrap_content"
+                        android:layout_height="match_parent"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal" />
+                </HorizontalScrollView>
+
+                <TextView
+                    android:id="@+id/elementCountText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="4dp"
+                    android:singleLine="true"
+                    android:text="元素"
+                    android:textColor="@color/json_null"
+                    android:textSize="11sp" />
+
+                <ImageButton
+                    android:id="@+id/copyPathButton"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="复制当前节点 JSONPath"
+                    android:src="@drawable/ic_copy"
+                    app:tint="@color/brand" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/searchRowForm"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:background="@color/editor_gutter"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="8dp"
+                android:paddingEnd="4dp"
+                android:visibility="gone">
+
+                <EditText
+                    android:id="@+id/searchInputForm"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:background="@null"
+                    android:hint="搜索键名或值"
+                    android:imeOptions="actionSearch"
+                    android:inputType="text"
+                    android:singleLine="true"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/searchCountForm"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minWidth="44dp"
+                    android:gravity="center"
+                    android:text="0/0"
+                    android:textColor="@color/json_null"
+                    android:textSize="12sp" />
+
+                <ImageButton
+                    android:id="@+id/searchPrevForm"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="上一个"
+                    android:src="@drawable/ic_arrow_up"
+                    app:tint="@color/json_null" />
+
+                <ImageButton
+                    android:id="@+id/searchNextForm"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="下一个"
+                    android:src="@drawable/ic_arrow_down"
+                    app:tint="@color/json_null" />
+
+                <ImageButton
+                    android:id="@+id/searchCloseForm"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="关闭搜索"
+                    android:src="@drawable/ic_close"
+                    app:tint="@color/json_null" />
+            </LinearLayout>
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/treeView"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:clipToPadding="false"
+                android:paddingTop="4dp"
+                android:paddingBottom="8dp" />
+
+            <!-- 当前层快捷跳转条：列出本层所有子项，容器点击进入 / 叶子点击定位 -->
+            <HorizontalScrollView
+                android:id="@+id/quickJumpScroll"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:background="@color/editor_gutter"
+                android:fillViewport="false"
+                android:scrollbars="none"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:id="@+id/quickJumpRow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="match_parent"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp" />
+            </HorizontalScrollView>
+
+            <LinearLayout
+                android:id="@+id/emptyState"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:orientation="vertical"
+                android:padding="32dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/emptyHint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:text="粘贴或输入 JSON，或点击底部栏导入"
+                    android:textColor="@color/json_null"
+                    android:textSize="13sp" />
+
+                <Button
+                    android:id="@+id/loadSampleButton"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="加载示例 JSON" />
+            </LinearLayout>
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- 底部操作栏：模式切换 + 常用操作（原顶部菜单与 FAB 统一移到底部，去掉重复项） -->
+    <LinearLayout
+        android:id="@+id/bottomBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/editor_gutter"
+        android:elevation="6dp"
+        android:orientation="vertical"
+        android:paddingTop="2dp">
+
+        <com.google.android.material.tabs.TabLayout
+            android:id="@+id/tabs"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@android:color/transparent"
+            app:tabIndicatorColor="@color/brand"
+            app:tabMode="fixed"
+            app:tabSelectedTextColor="@color/brand"
+            app:tabTextColor="@color/json_null" />
+
+        <!-- 可配置按钮（顺序/显隐在设置里调）在左侧横向滚动；「更多」固定在最右端 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:orientation="horizontal">
+
+            <HorizontalScrollView
+                android:id="@+id/bottomActionsScroll"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:clipToPadding="false"
+                android:fillViewport="true"
+                android:scrollbars="none">
+
+                <LinearLayout
+                    android:id="@+id/bottomActions"
+                    android:layout_width="wrap_content"
+                    android:layout_height="match_parent"
+                    android:gravity="center"
+                    android:orientation="horizontal"
+                    android:paddingStart="6dp"
+                    android:paddingEnd="4dp" />
+            </HorizontalScrollView>
+
+            <ImageButton
+                android:id="@+id/btnMore"
+                android:layout_width="46dp"
+                android:layout_height="44dp"
+                android:layout_gravity="center_vertical"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:layout_marginEnd="2dp"
+                android:contentDescription="更多"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_dots" />
+        </LinearLayout>
+    </LinearLayout>
+    </LinearLayout>
+
+    <!-- 左侧结构大纲：全树层级一览 + 搜索，点任意项直接跳转定位 -->
+    <LinearLayout
+        android:id="@+id/outlinePanel"
+        android:layout_width="304dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:background="@color/editor_gutter"
+        android:elevation="8dp"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="14dp"
+            android:paddingEnd="6dp">
+
+            <TextView
+                android:id="@+id/outlineTitle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="结构大纲"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/outlineCount"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="6dp"
+                android:textSize="11sp" />
+
+            <ImageButton
+                android:id="@+id/outlineClose"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="关闭大纲"
+                android:src="@drawable/ic_close"
+                app:tint="@color/brand" />
+        </LinearLayout>
+
+        <EditText
+            android:id="@+id/outlineSearch"
+            android:layout_width="match_parent"
+            android:layout_height="38dp"
+            android:layout_marginStart="12dp"
+            android:layout_marginEnd="12dp"
+            android:layout_marginBottom="4dp"
+            android:background="@drawable/bg_chip"
+            android:hint="搜索键名或值"
+            android:imeOptions="actionSearch"
+            android:inputType="text"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:singleLine="true"
+            android:textSize="13sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="34dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp">
+
+            <TextView
+                android:id="@+id/outlineOnlyContainers"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:gravity="center"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="只看容器"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/outlineExpandAll"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:layout_marginStart="8dp"
+                android:gravity="center"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="展开全部"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/outlineCollapseAll"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:layout_marginStart="8dp"
+                android:gravity="center"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="全部折叠"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/outlineHintText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingStart="14dp"
+            android:paddingTop="2dp"
+            android:paddingEnd="14dp"
+            android:paddingBottom="2dp"
+            android:text="单击容器展开/收起 · 长按跳转 · 最终项单击跳转"
+            android:textSize="10sp" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/outlineList"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:clipToPadding="false"
+            android:paddingTop="2dp"
+            android:paddingBottom="8dp" />
+    </LinearLayout>
+
+</androidx.drawerlayout.widget.DrawerLayout>

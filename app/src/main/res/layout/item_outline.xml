@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="44dp"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingEnd="14dp"
+    android:paddingStart="6dp">
+
+    <!-- 展开箭头：10sp 的字太小，真机上几乎看不清，这里放大到 16sp 粗体并留足点击区 -->
+    <TextView
+        android:id="@+id/outlineToggle"
+        android:layout_width="30dp"
+        android:layout_height="30dp"
+        android:gravity="center"
+        android:textSize="16sp"
+        android:textStyle="bold" />
+
+    <View
+        android:id="@+id/outlineDot"
+        android:layout_width="10dp"
+        android:layout_height="10dp"
+        android:layout_marginStart="3dp"
+        android:background="@drawable/dot_circle" />
+
+    <TextView
+        android:id="@+id/outlineLabel"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:layout_weight="1"
+        android:ellipsize="end"
+        android:singleLine="true"
+        android:textSize="13sp" />
+
+    <!-- 类型 + 数量：右端留 14dp 与抽屉边缘分开，避免贴边 -->
+    <TextView
+        android:id="@+id/outlineHint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:ellipsize="end"
+        android:maxWidth="96dp"
+        android:singleLine="true"
+        android:textSize="11sp" />
+</LinearLayout>

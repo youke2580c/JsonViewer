@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    明文 HTTP 放行策略。
+
+    Android 9（API 28）起，targetSdk >= 28 的应用默认禁止明文 HTTP，
+    请求 http:// 地址会在建立连接前就被 NetworkSecurityPolicy 拦下，
+    表现为 java.io.IOException: Cleartext HTTP traffic to xxx not permitted（耗时 0 ms）。
+
+    网络面板的定位是「用户填什么就请求什么」——很多接口/调试站点仍在用 http，
+    因此这里对全部域名放开明文流量，并保留系统 CA 作为 HTTPS 信任锚。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
