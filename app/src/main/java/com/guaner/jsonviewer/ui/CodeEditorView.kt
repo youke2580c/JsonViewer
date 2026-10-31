@@ -238,8 +238,13 @@ class CodeEditorView @JvmOverloads constructor(
         editable.replace(start, end, newText)
     }
 
-    /** 代码设置文本（导入/格式化后调用）：回到顶部 */
-    fun setTextProgrammatic(value: String) {
+    /**
+     * 代码设置文本（导入/格式化后调用）：回到顶部。
+     *
+     * forceTop=false 用于「恢复上次内容」：保持光标在 0 但不滚动、不强制格式化，
+     * 大文本进来只排一次版。
+     */
+    fun setTextProgrammatic(value: String, forceTop: Boolean = true) {
         stopFling()
         autoWrapNotified = false
         highlightedWindow = IntRange.EMPTY
@@ -258,11 +263,13 @@ class CodeEditorView @JvmOverloads constructor(
         }
         skipIncrementalOnce = true
         editor.setText(value)
-        editor.setSelection(0)
+        if (forceTop) editor.setSelection(0)
+        // 大文本：别让系统把光标滚进可视区（会额外触发一次布局），也先不做着色
+        val big = value.length > LARGE_TEXT_CHARS
         post {
-            editor.scrollTo(0, 0)
+            if (forceTop) editor.scrollTo(0, 0)
             rebuildLineStarts()
-            applySpans()
+            if (!big) applySpans()
             updateScrollThumb()
         }
         if (autoWrap && !autoWrapNotified) {

@@ -363,31 +363,37 @@ class MainActivity : AppCompatActivity() {
         // 先记「正在恢复」：如果这次进程倒在恢复阶段，下次启动就会自动跳过
         StartupGuard.markRestoreAttempt()
         lifecycleScope.launch {
-            val text = try {
-                withContext(Dispatchers.IO) { SessionStore.load(this@MainActivity) }
+            val loaded = try {
+                withContext(Dispatchers.IO) {
+                    SessionStore.load(this@MainActivity)?.let {
+                        // 读大文件本身也要点时间，读完再看大小是否需要放弃
+                        if (it.length > JsonLimits.MAX_INPUT_CHARS) null else it
+                    } to SessionStore.loadSize(this@MainActivity)
+                }
             } catch (e: Throwable) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
-                null
+                null to 0L
             }
+            val text = loaded.first
             if (text.isNullOrBlank()) {
+                // 上次内容过大就不读进来：读进来也没法流畅编辑，反而会让整机会话卡死
+                if (loaded.second > JsonLimits.MAX_INPUT_CHARS) {
+                    toast("上次的内容过大（${JsonLimits.formatChars(loaded.second.toInt())}），已跳过自动恢复")
+                }
                 StartupGuard.markHealthy()
                 return@launch
             }
+            if (isFinishing || isDestroyed) return@launch
             // 恢复期间用户已经开始输入/粘贴，则不覆盖
             if (binding.editorView.text.isNotBlank()) {
                 StartupGuard.markHealthy()
                 return@launch
             }
-            // 超过 200 万字符不读进来：读进来也没法流畅编辑，反而会让整机会话卡死
-            if (text.length > JsonLimits.MAX_INPUT_CHARS) {
-                StartupGuard.markHealthy()
-                toast("上次的内容过大（${JsonLimits.formatChars(text.length)}），已跳过自动恢复")
-                return@launch
-            }
             lastSavedSession = text
-            // 恢复到表单模式：表单只渲染当前一层，不会对全文做逐行排版，
-            // 超大文本进来也不会在首帧就卡住。文本通过 setTextProgrammatic 放进编辑器，
-            // 切到代码页时立即可见，但不再对整篇文本做一次排版。
+            // 把内容真正放进编辑器（之前漏了这一步，提示说恢复了但界面是空的）。
+            // 不强制滚动、不在大文本上立刻着色，避免恢复瞬间又要排版一次。
+            binding.editorView.setTextProgrammatic(text, forceTop = false)
+            // 回到表单模式：表单只渲染当前一层，不依赖整篇文本的排版
             switchMode(Mode.FORM)
             renderLevel()
             // 主界面已经正常呈现：清掉「正在恢复」标记

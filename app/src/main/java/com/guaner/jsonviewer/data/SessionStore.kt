@@ -71,6 +71,14 @@ object SessionStore {
         null
     }
 
+    /** 会话文件的字符数上限估算（按 UTF-8 中文 3 字节/字符的常见情况换算，只用于提前放弃超大内容） */
+    fun loadSize(context: Context): Long = try {
+        val f = file(context)
+        if (f.exists()) f.length() / 3 else 0L
+    } catch (e: Exception) {
+        0L
+    }
+
     fun clear(context: Context) {
         try {
             file(context).delete()
