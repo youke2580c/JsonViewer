@@ -114,6 +114,9 @@ class CodeEditorView @JvmOverloads constructor(
             // 整段替换（导入/格式化/恢复）由调用方自己控制提示，这里只关心用户编辑
             if (suppressCallback) return@subscribeEvent
             if (event.action == ContentChangeEvent.ACTION_SET_NEW_TEXT) return@subscribeEvent
+            // 每次编辑都检测一次「是否出现超长行」：粘贴一整段无换行的文本时，
+            // 之前只有 setText() 才检测，用户手动粘贴根本不会触发，于是换行永远不生效
+            maybeAutoWrapForLongLine(edited = true)
             onTextChanged?.invoke()
             // 每次编辑都可能让撤销栈从「空」变「非空」，顺手同步按钮可用态
             dispatchUndoState()
@@ -131,6 +134,22 @@ class CodeEditorView @JvmOverloads constructor(
     /** 只读遍历用的文本视图：不复制内容（大文本下避免每次搜索全量拷贝） */
     val textSequence: CharSequence
         get() = getText()
+
+    /**
+     * 判断触摸点是否落在滚动条上（含一点容差）。
+     *
+     * 滚动条本身就贴着控件右/下边缘，而应用又用「从右边缘向内滑」打开大纲，
+     * 两者位置完全重叠：用户想拖滚动条，实际却被当成划开大纲。
+     * 外部在决定是否接管边缘手势前，先用这个判断让路。
+     *
+     * 只有开启了滚动条且内容真的超出一屏时才认，否则普通边缘区域仍可正常划出抽屉。
+     */
+    fun isTouchOnScrollBar(x: Float, y: Float): Boolean {
+        val touchSlop = resources.displayMetrics.density * SCROLL_BAR_TOUCH_DP
+        if (isVerticalScrollBarEnabled() && scrollMaxY > 0 && x >= width - touchSlop) return true
+        if (isHorizontalScrollBarEnabled() && scrollMaxX > 0 && y >= height - touchSlop) return true
+        return false
+    }
 
     /**
      * 原位替换一段文本（值编辑保存用）。
@@ -162,16 +181,8 @@ class CodeEditorView @JvmOverloads constructor(
             suppressCallback = false
         }
         oversizeWarned = getText().length > JsonLimits.MAX_INPUT_CHARS
-        // 单行几十万字符时横向排版极贵（每帧都要从行首累加像素宽度），先临时关掉换行退避。
-        // 这里只为自保：正常 JSON 不会出现这种行，超长行通常来自用户粘贴的其它文本。
-        if (value.isNotEmpty() && LineStarts.maxLineLength(value) > SUPER_LONG_LINE_CHARS && !userWrap && !autoWrapped) {
-            setWordwrap(true, false)
-            autoWrapped = true
-            onAutoWrap?.invoke()
-        } else if (autoWrapped && LineStarts.maxLineLength(value) <= SUPER_LONG_LINE_RELEASE) {
-            autoWrapped = false
-            setWordwrap(userWrap, false)
-        }
+        // 导入 / 恢复是一次性动作，这里可以放心全量扫一遍最长行
+        maybeAutoWrapForLongLine(edited = false)
         if (forceTop) {
             setCursorOffset(0)
             post { scrollTo(0, 0) }
@@ -186,6 +197,59 @@ class CodeEditorView @JvmOverloads constructor(
         onTextChanged?.invoke()
         // 换了一整篇内容，撤销栈已被重置，按钮可用态要跟着变
         dispatchUndoState()
+    }
+
+    /**
+     * 检测是否需要为「超长单行」临时开启软换行。
+     *
+     * 参数 [edited]：
+     * - `false`（整篇替换）：直接全量扫最长行，一次 O(n) 可以接受
+     * - `true`（用户编辑/粘贴）：**只检查本次编辑影响的行**，绝不全量扫描。
+     *   否则粘贴 500KB 文本后，每敲一个键都扫一遍全文，主线程直接卡死。
+     *
+     * 之前这里只在 `setText()` 里检测，导致用户手动粘贴的长文本永远触发不到换行，
+     * 于是一整行几十万字符挤在一行里显示、横向排版每帧都要从头累加像素宽度 → 左右滑动卡死。
+     */
+    private fun maybeAutoWrapForLongLine(edited: Boolean) {
+        val content = getText()
+        val len = content.length
+        if (len == 0) {
+            if (autoWrapped) {
+                autoWrapped = false
+                setWordwrap(userWrap, true)
+            }
+            return
+        }
+        val longest = if (edited) {
+            maxLineLengthAroundCursor(content)
+        } else {
+            LineStarts.maxLineLength(content)
+        }
+        if (longest > SUPER_LONG_LINE_CHARS) {
+            if (!autoWrapped) {
+                autoWrapped = true
+                setWordwrap(true, true)
+                onAutoWrap?.invoke()
+            }
+        } else if (autoWrapped && longest <= SUPER_LONG_LINE_RELEASE) {
+            autoWrapped = false
+            setWordwrap(userWrap, true)
+        }
+    }
+
+    /**
+     * 只看光标附近某一行附近的最长行，O(行数) 而不是 O(全文)。
+     *
+     * 粘贴/输入只可能影响光标所在的那一行（或粘贴内容跨的几行），
+     * 检查它以当前行附近为主即可；跨多行的巨块粘贴由 [setTextProgrammatic] 全量兜底。
+     */
+    private fun maxLineLengthAroundCursor(content: Content): Int {
+        val cursor = runCatching { getCursor() }.getOrNull() ?: return 0
+        return LineStarts.maxLineLengthAround(
+            line = cursor.leftLine,
+            lineCount = content.lineCount,
+            radius = SCAN_AROUND_LINES
+        ) { i -> runCatching { content.getColumnCount(i) }.getOrDefault(0) }
     }
 
     /** 置顶：滚到第一行 */
@@ -489,6 +553,8 @@ class CodeEditorView @JvmOverloads constructor(
             symbolPairAutoCompletion = AppSettings.editorSymbolPair
             scrollFling = AppSettings.editorScrollFling
             overScrollEnabled = AppSettings.editorOverScroll
+            // 允许「只朝一个方向」的惯性滑动：横向内容长时，斜着滑也不会被纵向拖动卡住
+            singleDirectionFling = true
             highlightMatchingDelimiters = AppSettings.editorHighlightBrackets
         }
     }
@@ -510,7 +576,7 @@ class CodeEditorView @JvmOverloads constructor(
         setBackgroundColor(themeColors.background)
         applyFontSize((ThemeManager.codeFontSize * currentScale).coerceIn(8f, 40f))
         userWrap = ThemeManager.codeWrap
-        setWordwrap(userWrap, false)
+        setWordwrap(userWrap, true)
         applyEditorOptions()
         applyDiagnostics(currentError)
     }
@@ -540,7 +606,7 @@ class CodeEditorView @JvmOverloads constructor(
 
     fun setWrap(wrap: Boolean) {
         userWrap = wrap
-        if (!autoWrapped) setWordwrap(wrap, false)
+        if (!autoWrapped) setWordwrap(wrap, true)
     }
 
     // ---------- 双指缩放（Sora 默认不支持，这里补上） ----------
@@ -622,6 +688,13 @@ class CodeEditorView @JvmOverloads constructor(
     private fun handleEdgeSwipe(e: MotionEvent): Boolean {
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                // 按在滚动条上：这是「拖滚动条」，不是「从边缘划开大纲」。
+                // 滚动条贴着右边缘，和边缘手势区完全重叠，不排除就会边拖边弹大纲。
+                if (isTouchOnScrollBar(e.x, e.y)) {
+                    edgeTracking = false
+                    edgeTriggered = false
+                    return false
+                }
                 val leftHit = e.x <= edgeWidthPx
                 val rightHit = e.x >= width - edgeWidthPx
                 edgeFromRightSide = if (edgeSwipeBoth) rightHit else edgeSwipeFromRight
@@ -731,5 +804,11 @@ class CodeEditorView @JvmOverloads constructor(
 
         /** 最长行降到该长度以下才恢复用户的换行设置（滞回，避免临界值反复切换） */
         const val SUPER_LONG_LINE_RELEASE = 10_000
+
+        /** 用户编辑后检查超长行时，只看光标前后各几行（避免每次按键扫全文） */
+        const val SCAN_AROUND_LINES = 3
+
+        /** 判定「点在滚动条上」的横向容差（dp）；滚动条本身更窄，留点余量好按 */
+        const val SCROLL_BAR_TOUCH_DP = 22f
     }
 }

@@ -279,6 +279,13 @@ class MainActivity : AppCompatActivity() {
         if (binding.drawerLayout.isDrawerOpen(binding.outlinePanel)) return false
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                // 手指按在滚动条上时让路：拖动滚动条不该被识别成「从边缘划开大纲」。
+                // 滚动条贴着控件右/下边缘，和边缘手势区域完全重叠，不排除的话拖一次开一次。
+                if (binding.editorView.isTouchOnScrollBar(ev.x, ev.y)) {
+                    edgePending = false
+                    edgeClaimed = false
+                    return false
+                }
                 val leftHit = ev.x <= formEdgeWidth
                 val rightHit = ev.x >= resources.displayMetrics.widthPixels - formEdgeWidth
                 val both = AppSettings.swipeBoth
@@ -1089,10 +1096,12 @@ class MainActivity : AppCompatActivity() {
             // 串行化：上一次解析（纯 CPU 循环，不响应取消）没跑完时先等它结束，
             // 避免连续停顿触发多个解析同时抢核
             parseGate.withLock {
-                // 在主线程取一次文本快照（防抖后只取一次），解析与建索引放后台
-                val snapshot = binding.editorView.text
                 val parsed = try {
                     withContext(Dispatchers.Default) {
+                        // 快照本身是一次 O(n) 拷贝（toString），放到后台线程做：
+                        // 放在主线程会在每次编辑后卡几毫秒到几十毫秒，500KB 时体感就是「打字发粘」。
+                        // 编辑器内容是线程安全的 CharSequence，后台读一次快照即可。
+                        val snapshot = binding.editorView.text
                         val r = JsonParser.parse(snapshot)
                         val idx = if (r is ParseResult.Success) {
                             TreeFlattener.buildIndex(r.root)
