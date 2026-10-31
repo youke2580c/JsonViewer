@@ -195,7 +195,7 @@ class CodeEditorView @JvmOverloads constructor(
         } finally {
             suppressCallback = false
         }
-        if (folded) notifyAutoFolded()
+        if (folded) notifyAutoFolded(hasLineWiderThan(getText(), HUGE_LINE_CHARS))
         oversizeWarned = getText().length > JsonLimits.MAX_INPUT_CHARS
         if (forceTop) {
             setCursorOffset(0)
@@ -632,7 +632,8 @@ class CodeEditorView @JvmOverloads constructor(
             folding = false
         }
         currentError?.let { applyDiagnostics(it) }
-        notifyAutoFolded()
+        // 折完还剩超长行，说明那是一整段超长字符串（引号内不能动），只能如实提示
+        notifyAutoFolded(hasLineWiderThan(content, HUGE_LINE_CHARS))
         onTextChanged?.invoke()
         dispatchUndoState()
     }
@@ -645,9 +646,14 @@ class CodeEditorView @JvmOverloads constructor(
         return false
     }
 
-    private fun notifyAutoFolded() {
+    private fun notifyAutoFolded(hasUnfoldable: Boolean = false) {
         if (!userWrap) return
-        Toast.makeText(context, "检测到超长行，已自动折行以便编辑（内容不变）", Toast.LENGTH_SHORT).show()
+        val msg = if (hasUnfoldable) {
+            "已自动折行；文中含超长字符串，该行保持原样（换行会较慢）"
+        } else {
+            "检测到超长行，已自动折行以便编辑（内容不变）"
+        }
+        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
     }
 
     // ---------- 双指缩放（Sora 默认不支持，这里补上） ----------
@@ -849,5 +855,8 @@ class CodeEditorView @JvmOverloads constructor(
 
         /** 粘贴/输入停顿多久后检查一次超长行 */
         const val FOLD_CHECK_DELAY_MS = 300L
+
+        /** 折完还剩这么长的行，说明是不可折的超长字符串，提示用户该行换行会慢 */
+        const val HUGE_LINE_CHARS = 20_000
     }
 }
