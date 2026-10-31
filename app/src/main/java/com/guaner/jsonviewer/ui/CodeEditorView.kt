@@ -21,6 +21,7 @@ import com.guaner.jsonviewer.json.JsonError
 import com.guaner.jsonviewer.json.JsonLimits
 import com.guaner.jsonviewer.json.JsonParser
 import com.guaner.jsonviewer.json.ParseResult
+import com.guaner.jsonviewer.text.ImeCommit
 import com.guaner.jsonviewer.text.ImeSelection
 import com.guaner.jsonviewer.text.SafeFolder
 import com.guaner.jsonviewer.theme.ThemeColors
@@ -166,10 +167,16 @@ class CodeEditorView @JvmOverloads constructor(
             // 只有「一次塞进来一大段」才值得检查折行（粘贴、拖入、输入法整句上屏）。
             // 删除 / 逐字输入绝不触发：折行要整篇替换文本，光标和滚动都会跳，
             // 用户只是删了一个字符却看到「前面的内容都不见了」，就是这么来的。
+            //
+            // 注意这里是 `post` 而不是防抖延迟：输入法粘贴常常把一大段拆成多批 commitText，
+            // 批与批之间只隔几毫秒，300ms 的防抖等到它动手时，某一批早就撞上了
+            // 「一行几十万字符的原始形态」，那一批的 O(n²) 断行直接把主线程堵死。
+            // 排到本轮消息队列末尾，既能赶在下一批之前收尾，又不会在事件派发的调用栈里
+            // 再改一遍 Content。
             if (event.action == ContentChangeEvent.ACTION_INSERT &&
                 event.changedText.length >= FOLD_TRIGGER_CHARS
             ) {
-                scheduleFoldCheck()
+                handler.post { foldLongLinesIfNeeded() }
             }
         }
 
@@ -769,7 +776,7 @@ class CodeEditorView @JvmOverloads constructor(
      * 长行慢一点可以忍，内容坏了不能忍。
      */
     private fun foldSafely(text: CharSequence, anchor: Int = -1): SafeFolder.Result? {
-        if (!autoFoldEnabled || !userWrap) return null
+        if (!autoFoldEnabled || !userWrap || !isWordwrap) return null
         val result = SafeFolder.foldWithAnchor(text, SafeFolder.DEFAULT_THRESHOLD, anchor) ?: return null
         return if (SafeFolder.onlyInsertedLineBreaks(text, result.text, result.inserted)) result else null
     }
@@ -780,6 +787,14 @@ class CodeEditorView @JvmOverloads constructor(
             if (content.getColumnCount(i) > limit) return true
         }
         return false
+    }
+
+    private fun notifyUnwrappable() {
+        Toast.makeText(
+            context,
+            "这段内容是一整行超长字符串，无法折行；已临时关闭自动换行以免卡死",
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     private fun notifyAutoFolded(hasUnfoldable: Boolean = false) {
@@ -830,7 +845,10 @@ class CodeEditorView @JvmOverloads constructor(
 
         override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
             if (text.isNullOrEmpty()) endComposing() else beginComposing()
-            return super.setComposingText(text, newCursorPosition)
+            // 少数输入法（语音输入、粘贴预览）会把整段文本先塞进 composing 里，
+            // 同样要先折短，否则一行几十万字符就已经成型了
+            val prepared = ImeCommit.prepare(text ?: "", autoFoldEnabled && userWrap) ?: text
+            return super.setComposingText(prepared, newCursorPosition)
         }
 
         override fun finishComposingText(): Boolean {
@@ -850,7 +868,11 @@ class CodeEditorView @JvmOverloads constructor(
             // 组成状态一旦卡在 true，之后所有左右键都会被当成「还在组词」放行给候选区，
             // 表现就是「明明按了移动光标，光标纹丝不动」。
             endComposing()
-            return super.commitText(text, newCursorPosition)
+            if (text.isNullOrEmpty()) return super.commitText(text, newCursorPosition)
+            // 输入法粘贴：先把超长行折短，再决定怎么插进去（原因见 ImeCommit）
+            val prepared = ImeCommit.prepare(text, autoFoldEnabled && userWrap) ?: text
+            if (prepared.length >= ImeCommit.BULK_CHARS) return insertBulkText(prepared)
+            return super.commitText(prepared, newCursorPosition)
         }
 
         // ---- 上下文文本：按字符数封顶 ----
@@ -939,6 +961,62 @@ class CodeEditorView @JvmOverloads constructor(
      * 渲染缓存的一致性由 Content 的监听器负责（插入/删除走 `updateForInsertion/Deletion`），
      * 跟 setSelection 里那次 invalidate 无关，跳过是安全的。
      */
+    /**
+     * 整段插入的分流路径，输入法粘贴与菜单粘贴共用。
+     *
+     * 绕开 `CodeEditor.commitText()`：它会为了「符号配对」把整段文本 `toCharArray()`
+     * 复制一份再逐字符匹配（`symbolPairAutoCompletion` 开着的话，几十万次比较纯属白做），
+     * 之后还要给整段做一次异步格式化。这里直接用 Content 的 API 替换，语义完全一致。
+     *
+     * @return 是否已完成插入；false 表示调用方应当退回原路径
+     */
+    private fun insertBulkText(text: CharSequence): Boolean {
+        // 折也折不动的极端情况：整段就是一个没有结构符的超长字符串。
+        // 这样的行会被软换行拆成上万个 row，之后每敲一个字都要重断一次，等于卡死。
+        // 这里临时退回「不换行」——横向拖着看总比完全动不了强，并且事后告诉用户。
+        if (userWrap && isWordwrap && ImeCommit.longestLineLength(text) > HUGE_LINE_CHARS) {
+            setWordwrap(false, false)
+            notifyUnwrappable()
+        }
+        val content = getText()
+        val cur = cursor ?: return false
+        val lo = minOf(cur.left().index, cur.right().index)
+        val hi = maxOf(cur.left().index, cur.right().index)
+        content.beginBatchEdit()
+        val ok = try {
+            content.replace(lo, hi, text)
+            true
+        } catch (_: Throwable) {
+            false
+        } finally {
+            runCatching { content.endBatchEdit() }
+        }
+        if (!ok) return false
+        // 光标落到刚插入的这串文本后面
+        moveCaretToIndex(lo + text.length)
+        return true
+    }
+
+    /**
+     * 编辑器内长按菜单 / 输入法菜单里的「粘贴」。
+     *
+     * 这条通道**不经过** `onCreateInputConnection` 返回的那层包装：`CodeEditor.pasteText()`
+     * 直接调的是它自己持有的 `inputConnection.commitText()`。好在 `pasteText(CharSequence)`
+     * 是可覆写的虚方法，无参版本会一路派发到这里，所以在这接住即可 —— 否则大文本照样卡死。
+     *
+     * 小文本照旧交给 Sora（保留它原来的行为，包括粘贴后格式化）；
+     * 只有体量达到 `ImeCommit.BULK_CHARS` 的才先折行再自己插。
+     */
+    override fun pasteText(text: CharSequence?) {
+        if (text.isNullOrEmpty()) {
+            super.pasteText(text)
+            return
+        }
+        val prepared = ImeCommit.prepare(text, autoFoldEnabled && userWrap) ?: text
+        if (prepared.length >= ImeCommit.BULK_CHARS && insertBulkText(prepared)) return
+        super.pasteText(prepared)
+    }
+
     private fun moveCaretToIndex(index: Int) {
         // 输入法回调里崩一下就是软键盘整个失联，宁可吞掉异常也不要打断这条通道
         runCatching { moveCaretToIndexInternal(index) }
