@@ -1,9 +1,6 @@
 package com.guaner.jsonviewer.ui
 
 import android.content.Context
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.Handler
 import android.os.Looper
@@ -25,7 +22,6 @@ import io.github.rosemoe.sora.lang.diagnostic.DiagnosticRegion
 import io.github.rosemoe.sora.lang.diagnostic.DiagnosticsContainer
 import io.github.rosemoe.sora.widget.CodeEditor
 import io.github.rosemoe.sora.widget.EditorSearcher
-import io.github.rosemoe.sora.widget.schemes.EditorColorScheme
 import kotlin.math.abs
 
 /**
@@ -216,17 +212,21 @@ class CodeEditorView @JvmOverloads constructor(
     }
 
     /**
-     * 跳转并高亮一段区间（大纲 / 快捷跳转 / 搜索定位）。
+     * 跳转并高亮一段区间（大纲 / 快捷跳转）。
      *
-     * 高亮分两层，**全部由 [onDraw] 自绘色块**：
-     * - **整行浅色带**：铺满整个行高，从行首一直到控件右边缘
-     * - **字段名实色块**：只覆盖 [start]–[end]（键名或值本身），压在整行带之上
+     * **走的是和语法着色 / 搜索命中同一套样式通道**：把高亮区间交给 [JsonSpansLanguage]，
+     * 由它在对应的行里插一个带背景色的 `Span`（`TextStyle.makeStyle(fg, bg, ...)`），
+     * 剩下的交给 Sora 自己排版绘制——它天然知道每个字符在哪、软换行怎么折。
      *
-     * 为什么不用诊断区？
-     * Sora 的 `EditorRenderer.drawDiagnosticIndicators` 里是
-     * `severityColorId = sDiagnosticsColorMapping[severity]; if (severityColorId == 0) continue;`
-     * — `SEVERITY_NONE = 0` 被整段跳过；且它画的只是波浪线/下划线，**从来不是背景块**。
-     * 之前整行用 `SEVERITY_TYPO` 看似有效，实际只是文字底下一条几乎看不见的细线。
+     * 早前试过两条歪路，都不行：
+     * 1. 诊断通道 `setDiagnostics`：`drawDiagnosticIndicators` 只画贴基线的波浪线/下划线，
+     *    而且 `SEVERITY_NONE` 映射到颜色 id 0 会被整段跳过，根本画不出背景块。
+     * 2. 自己重写 `onDraw` 按坐标画矩形：`getCharLayoutOffset` 只认逻辑行号，
+     *    软换行、Tab、比例字体全部会算歪，维护成本极高。
+     *
+     * 现在两层高亮都在语言层完成：
+     * - **整行背景**：整行下发一个背景色 Span（浅色带）
+     * - **字段名背景**：目标区间单独下发更重的背景色 Span，天然覆盖在整行带之上
      */
     fun flashRange(start: Int, end: Int) {
         val content = getText()
@@ -235,161 +235,15 @@ class CodeEditorView @JvmOverloads constructor(
         val s = start.coerceIn(0, len - 1)
         val e = end.coerceIn(s + 1, len)
 
-        // 整行范围：把字段所在行完整覆盖，方便一眼看到「跳到哪一行了」
-        val indexer = content.getIndexer()
-        val pos = indexer.getCharPosition(s)
-        val lineStart = indexer.getCharIndex(pos.line, 0)
-        val lineEnd = if (pos.line + 1 < content.lineCount) {
-            indexer.getCharIndex(pos.line + 1, 0) - 1
-        } else {
-            len
-        }
-
-        flashLineStart = lineStart.coerceIn(0, len)
-        flashLineEnd = lineEnd.coerceIn(flashLineStart, len)
-        flashStart = s
-        flashEnd = e
-
+        language.setFlashRange(s, e)
         jumpTo(s, takeFocus = false)
-        // 两层色块都由 onDraw 自绘，这里必须显式重绘一次
-        invalidate()
         handler.removeCallbacks(clearFlashRunnable)
         handler.postDelayed(clearFlashRunnable, FLASH_MS)
     }
 
-    private var flashStart = -1
-    private var flashEnd = -1
-    private var flashLineStart = -1
-    private var flashLineEnd = -1
     private val clearFlashRunnable = Runnable {
-        flashStart = -1
-        flashEnd = -1
-        flashLineStart = -1
-        flashLineEnd = -1
-        invalidate()
+        language.setFlashRange(-1, -1)
     }
-
-    // ---------- 跳转高亮：两层自绘色块 ----------
-
-    private val flashLinePaint = Paint().apply {
-        isAntiAlias = true
-        style = Paint.Style.FILL
-    }
-    private val flashWordPaint = Paint().apply {
-        isAntiAlias = true
-        style = Paint.Style.FILL
-    }
-    private val flashRect = RectF()
-
-    /**
-     * 在编辑器完成绘制后，铺两层跳转高亮色块。
-     *
-     * 行坐标从 [getLayout] 拿：
-     * - 纵向直接用 `getRowTop(rowIndex)` / `getRowBottom(rowIndex)`，得到**整行高度**，
-     *   正好铺满行间空隙，看起来是一条完整的色带而不是细线
-     * - 横向用 `getCharLayoutOffset(line, column)` 取字符 x 坐标（软换行时每段各画一块）
-     *
-     * 两层都不画文字，只在 `super.onDraw` 之后叠色块，所以文字始终在最上层、可读性不受影响。
-     */
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        drawFlashLine(canvas)
-        drawFlashWord(canvas)
-    }
-
-    /** 整行浅色带：铺满行高，从行首一直延伸到控件右边缘 */
-    private fun drawFlashLine(canvas: Canvas) {
-        if (flashLineStart < 0 || flashLineEnd < flashLineStart) return
-        val content = getText()
-        val len = content.length
-        if (len == 0) return
-        val layout = runCatching { getLayout() }.getOrNull() ?: return
-        val line = runCatching {
-            content.getIndexer().getCharPosition(flashLineStart.coerceIn(0, len - 1)).line
-        }.getOrDefault(-1)
-        if (line < 0) return
-
-        flashLinePaint.color = getColorScheme().getColor(FLASH_LINE_COLOR_ID)
-        val offsetY = getOffsetY()
-        val right = width.toFloat()
-
-        for (rowIndex in getFirstVisibleRow()..getLastVisibleRow()) {
-            val row = runCatching { layout.getRowAt(rowIndex) }.getOrNull() ?: continue
-            if (row.lineIndex != line) continue
-            val top = (getRowTop(rowIndex) - offsetY).toFloat()
-            // 相邻可见行之间补 1px，避免两条色带之间出现发丝缝
-            flashRect.set(0f, top, right, (getRowBottom(rowIndex) - offsetY).toFloat() + 1f)
-            canvas.drawRect(flashRect, flashLinePaint)
-        }
-    }
-
-    /** 字段名实色块：只覆盖目标区间，压在整行色带之上 */
-    private fun drawFlashWord(canvas: Canvas) {
-        if (flashStart < 0 || flashEnd <= flashStart) return
-        val content = getText()
-        val len = content.length
-        if (len == 0) return
-        val s = flashStart.coerceIn(0, len - 1)
-        val e = flashEnd.coerceIn(s + 1, len)
-        val layout = runCatching { getLayout() }.getOrNull() ?: return
-        val indexer = content.getIndexer()
-
-        val startPos = indexer.getCharPosition(s)
-        val endPos = indexer.getCharPosition(e)
-
-        flashWordPaint.color = getColorScheme().getColor(EditorColorScheme.STATIC_SPAN_BACKGROUND)
-
-        val offsetX = getOffsetX()
-        val offsetY = getOffsetY()
-        val radius = getDpUnit() * 2.5f
-        val padX = getDpUnit() * 1.5f
-        // 纵向内缩：让色块比整行带矮一点，形成「带中带」的层次，又不至于压住上下行文字
-        val insetY = getDpUnit() * 1.5f
-        val charW = measureCharWidth()
-
-        // 只扫可视行：跳转后目标一定在屏上，无需遍历全文
-        val firstRow = getFirstVisibleRow()
-        val lastRow = getLastVisibleRow()
-        for (rowIndex in firstRow..lastRow) {
-            val row = runCatching { layout.getRowAt(rowIndex) }.getOrNull() ?: continue
-            val line = row.lineIndex
-            if (line < startPos.line || line > endPos.line) continue
-
-            val colFrom = maxOf(if (line == startPos.line) startPos.column else 0, row.startColumn)
-            val colTo = minOf(
-                if (line == endPos.line) endPos.column else content.getColumnCount(line),
-                row.endColumn
-            )
-            if (colTo <= colFrom) continue
-
-            // 横向用「相对本绘制行起始列」的等宽字宽累加。
-            // 不用 getCharLayoutOffset：它只接受逻辑行号，软换行时会把整行拼成一行算，坐标会跑到屏幕外。
-            val xFrom = (colFrom - row.startColumn) * charW
-            val xTo = (colTo - row.startColumn) * charW
-            val top = (getRowTop(rowIndex) - offsetY).toFloat()
-            val bottom = (getRowBottom(rowIndex) - offsetY).toFloat()
-            flashRect.set(
-                xFrom - offsetX - padX,
-                top + insetY,
-                xTo - offsetX + padX,
-                bottom - insetY
-            )
-            if (flashRect.right > 0f && flashRect.left < width) {
-                canvas.drawRoundRect(flashRect, radius, radius, flashWordPaint)
-            }
-        }
-    }
-
-    /** 单个字符的等宽像素；字体通常是等宽字体，量一个 "M" 即可 */
-    private fun measureCharWidth(): Float {
-        return runCatching {
-            val p = Paint(Paint.ANTI_ALIAS_FLAG)
-            p.typeface = getTypefaceText()
-            p.textSize = getTextSizePx()
-            p.measureText("M")
-        }.getOrDefault(getTextSizePx() * 0.6f)
-    }
-
 
     // ---------- 错误与搜索高亮 ----------
 
@@ -868,9 +722,6 @@ class CodeEditorView @JvmOverloads constructor(
     private companion object {
         /** 单次最多下发的搜索命中诊断区数量 */
         const val MAX_SEARCH_REGIONS = 200
-
-        /** 跳转「整行色带」用的自定义配色槽位（定义在主题里，避免两处写死不同的数字） */
-        const val FLASH_LINE_COLOR_ID = JsonEditorTheme.FLASH_LINE_COLOR_ID
 
         /** 定位闪烁高亮的持续时间 */
         const val FLASH_MS = 1_600L

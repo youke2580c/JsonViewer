@@ -1,6 +1,9 @@
 package com.guaner.jsonviewer.editor
 
+import io.github.rosemoe.sora.lang.styling.TextStyle
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -124,15 +127,30 @@ class JsonSpansLanguageTest {
     @Test
     fun `colors ids are outside builtin range`() {
         // 自定义槽位必须远离内置编号，避免和 Sora 自带配色互相覆盖
-        val ids = listOf(
-            JsonSpansLanguage.ColorIds.KEY,
-            JsonSpansLanguage.ColorIds.STRING,
-            JsonSpansLanguage.ColorIds.NUMBER,
-            JsonSpansLanguage.ColorIds.LITERAL,
-            JsonSpansLanguage.ColorIds.PUNCT
-        )
+        val ids = JsonSpansLanguage.ColorIds.ALL.toList()
         assertEquals(ids.size, ids.toSet().size)
         // 内置槽位 0..66（EditorColorScheme.END_COLOR_ID = 66，protected 不能直接引用）
         assertTrue(ids.all { it > 66 })
+    }
+
+    @Test
+    fun `flash styles carry background color id`() {
+        // 跳转高亮必须带背景色，否则又退回「只有文字改色」的效果
+        val line = JsonSpansLanguage.FLASH_LINE_STYLE
+        val word = JsonSpansLanguage.FLASH_WORD_STYLE
+        assertEquals(JsonSpansLanguage.ColorIds.FLASH_LINE, TextStyle.getBackgroundColorId(line))
+        assertEquals(JsonSpansLanguage.ColorIds.FLASH_WORD, TextStyle.getBackgroundColorId(word))
+        assertNotEquals(JsonSpansLanguage.ColorIds.FLASH_LINE, JsonSpansLanguage.ColorIds.FLASH_WORD)
+
+        // 恢复样式不能带背景，否则高亮会一路蔓延到行尾之后
+        assertEquals(0, TextStyle.getBackgroundColorId(JsonSpansLanguage.RESTORE_STYLE))
+    }
+
+    @Test
+    fun `flash styles do not set accidental text decorations`() {
+        // 背景色一旦写错位就会点亮 STRIKETHROUGH，出现「莫名删除线」
+        assertFalse(TextStyle.isStrikeThrough(JsonSpansLanguage.FLASH_LINE_STYLE))
+        assertFalse(TextStyle.isStrikeThrough(JsonSpansLanguage.FLASH_WORD_STYLE))
+        assertFalse(TextStyle.isBold(JsonSpansLanguage.FLASH_WORD_STYLE))
     }
 }

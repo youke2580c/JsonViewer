@@ -16,14 +16,6 @@ import io.github.rosemoe.sora.widget.schemes.EditorColorScheme
  */
 object JsonEditorTheme {
 
-    /**
-     * 跳转「整行色带」的自定义配色槽位。
-     *
-     * 必须大于 `EditorColorScheme.END_COLOR_ID`（= 66），否则会覆盖内置槽位。
-     * 与 `CodeEditorView.FLASH_LINE_COLOR_ID` 保持一致。
-     */
-    const val FLASH_LINE_COLOR_ID = 70
-
     /** 按当前主题生成一份配色方案 */
     fun schemeOf(colors: ThemeColors): EditorColorScheme {
         val scheme = EditorColorScheme()
@@ -77,6 +69,11 @@ object JsonEditorTheme {
             setColor(JsonSpansLanguage.ColorIds.LITERAL, colors.jsonBoolean)
             setColor(JsonSpansLanguage.ColorIds.PUNCT, colors.jsonPunct)
 
+            // ---------- 大纲跳转高亮（走 Span 背景，和搜索命中同一条渲染管线） ----------
+            setColor(JsonSpansLanguage.ColorIds.FLASH_LINE, jumpLine)
+            setColor(JsonSpansLanguage.ColorIds.FLASH_WORD, jumpWord)
+            setColor(JsonSpansLanguage.ColorIds.FLASH_TEXT, colors.text)
+
             // ---------- 诊断（错误 / 警告 / 拼写） ----------
             setColor(EditorColorScheme.PROBLEM_ERROR, colors.jsonBoolean)
             setColor(EditorColorScheme.PROBLEM_WARNING, colors.jsonNumber)
@@ -97,10 +94,6 @@ object JsonEditorTheme {
             setColor(EditorColorScheme.STATIC_SPAN_BACKGROUND, jumpWord)
             setColor(EditorColorScheme.STATIC_SPAN_FOREGROUND, colors.text)
             setColor(EditorColorScheme.STICKY_SCROLL_DIVIDER, colors.gutter)
-
-            // ---------- 跳转「整行色带」（自定义槽位） ----------
-            // 与 CodeEditorView.FLASH_LINE_COLOR_ID 必须保持一致
-            setColor(FLASH_LINE_COLOR_ID, jumpLine)
 
         }
         return scheme

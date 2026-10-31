@@ -21,6 +21,12 @@ import io.github.rosemoe.sora.widget.SymbolPairMatch
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
+/** 语法 token 的样式优先级（同列冲突时低于跳转高亮） */
+private const val PRIORITY_TOKEN = 0
+
+/** 跳转高亮在行内的优先级（同列时压过语法 token） */
+private const val PRIORITY_FLASH = 1
+
 /** 语法着色种类，映射到编辑器配色方案里的颜色槽位 */
 enum class TokenKind { KEY, STRING, NUMBER, LITERAL, PUNCT }
 
@@ -75,8 +81,37 @@ class JsonSpansLanguage(
         manager.invalidateAll()
     }
 
+    /**
+     * 设置「跳转高亮」区间（全局字符下标，闭区间语义 `[start, end)`）。
+     *
+     * 传 `-1, -1` 表示清除。设置后立即重新下发样式：
+     * - 起始行到结束行整行铺浅色背景（`ColorIds.FLASH_LINE`）
+     * - 目标区间本身再叠一层更重的背景（`ColorIds.FLASH_WORD`）
+     *
+     * 之所以走样式通道而不是诊断或自绘：`Span` 的背景由 Sora 排版层直接绘制，
+     * 和搜索命中、语法着色完全同一条路，软换行 / Tab / 任何字体都不会算歪。
+     */
+    fun setFlashRange(start: Int, end: Int) {
+        manager.applyFlashRange(start, end)
+    }
+
     /** 单行分词结果（行内相对列号） */
     class Token(val start: Int, val end: Int, val kind: TokenKind)
+
+    /**
+     * 行内待下发的一段样式。
+     *
+     * [priority] 只在**同列冲突**时用于决定谁留下：高亮 > 语法 token。
+     * 否则字段名的起点恰好压在某个 token 上时，高亮会被去重丢掉、整块不显示。
+     */
+    private class LineSpan(val column: Int, val style: Long, val priority: Int)
+
+    /** 高亮落在某一行内的列区间（行内相对列号，`[start, end)`） */
+    private class LineFlash(
+        val wordStart: Int,
+        val wordEnd: Int,
+        val lineEnd: Int
+    )
 
     private inner class LinesAnalyzeManager : AnalyzeManager {
 
@@ -94,6 +129,19 @@ class JsonSpansLanguage(
         /** 行级 token 缓存，null 表示待重新计算 */
         private var cache: Array<ArrayList<Token>?> = emptyArray()
         private val lock = ReentrantLock()
+
+        /** 跳转高亮区间（全局字符下标，`[flashStart, flashEnd)`）；-1 表示无 */
+        private var flashStart = -1
+        private var flashEnd = -1
+
+        /** 设置/清除跳转高亮，并立刻重新下发样式 */
+        fun applyFlashRange(start: Int, end: Int) {
+            lock.withLock {
+                flashStart = start
+                flashEnd = end
+            }
+            dispatch()
+        }
 
         override fun setReceiver(receiver: StyleReceiver?) {
             this.receiver = receiver
@@ -178,6 +226,10 @@ class JsonSpansLanguage(
                 // 行数变了说明内容被整体替换过或增删了新行，旧的按行结果不再可信
                 cache = arrayOfNulls(lineCount)
             }
+
+            // 把全局高亮区间换算成「行 -> 行内列区间」，避免逐行再查一次 indexer
+            val flash = resolveFlash(c)
+
             val builder = MappedSpans.Builder(lineCount)
             for (line in 0 until lineCount) {
                 var tokens = cache[line]
@@ -185,22 +237,93 @@ class JsonSpansLanguage(
                     tokens = scanLine(c, line)
                     cache[line] = tokens
                 }
-                // 注意 add() 的第一个参数是**行号**，Span 自己的 column 才是行内列号。
-                // 同一行的多个 span 必须按列严格递增依次加入，否则 Builder 会抛
-                // IllegalStateException("Invalid position")，整篇样式就下发不出去
-                // （表现为完全不着色，且表单/大纲取不到内容）。
-                var lastColumn = -1
+
+                // 收集本行要下发的 span：先放语法 token，再插入高亮片段，最后按列排序。
+                // 同一行 span 的列号必须**严格递增**，否则 Builder 抛 IllegalStateException，
+                // 整篇样式下发失败（表现为完全不着色、表单大纲全空）。
+                // priority 用来处理「同列冲突」：高亮必须压过语法 token，否则高亮起点
+                // 恰好落在 token 上时会被去重丢掉，整块高亮就不见了。
+                val spans = ArrayList<LineSpan>(tokens.size + 5)
+
                 for (t in tokens) {
                     if (t.start < 0 || t.start >= t.end) continue
-                    if (t.start <= lastColumn) continue
-                    lastColumn = t.start
-                    builder.add(line, SpanFactory.obtain(t.start, styleOf(t)))
+                    spans.add(LineSpan(t.start, styleOf(t), PRIORITY_TOKEN))
+                }
+
+                val hl = flash?.get(line)
+                if (hl != null) {
+                    spans.addAll(flashSpans(hl, c.getColumnCount(line)))
+                }
+
+                // 按「列号升序、同列优先级降序」排序：同列冲突时高亮胜出
+                spans.sortWith(compareBy({ it.column }, { -it.priority }))
+                var lastColumn = -1
+                for (s in spans) {
+                    if (s.column <= lastColumn) continue
+                    lastColumn = s.column
+                    builder.add(line, SpanFactory.obtain(s.column, s.style))
                 }
                 // 这一行没有 token 时补一个空白 span，保证行在样式表里存在
                 builder.determine(line)
             }
             builder.addNormalIfNull()
             return Styles(builder.build())
+        }
+
+        /**
+         * 把一行的高亮切成若干段样式（纯计算，便于单测）。
+         *
+         * 规则：整行铺浅色带，字段名区间叠更重的块，区间外恢复浅色带，行尾恢复无背景。
+         * 当字段名块正好顶到行尾时**不再单独插一条 bandEnd 的恢复段** ——
+         * 那条和块尾同列，会被去重丢掉，反而让背景蔓延到下一行。
+         */
+        private fun flashSpans(hl: LineFlash, lineLen: Int): List<LineSpan> {
+            val bandEnd = hl.lineEnd.coerceIn(0, lineLen)
+            if (bandEnd <= 0) return emptyList()
+            val wordFrom = hl.wordStart.coerceIn(0, bandEnd)
+            val wordTo = hl.wordEnd.coerceIn(wordFrom, bandEnd)
+            val out = ArrayList<LineSpan>(4)
+            out.add(LineSpan(0, FLASH_LINE_STYLE, PRIORITY_FLASH))
+            if (wordTo > wordFrom) {
+                out.add(LineSpan(wordFrom, FLASH_WORD_STYLE, PRIORITY_FLASH))
+                if (wordTo < bandEnd) {
+                    out.add(LineSpan(wordTo, FLASH_LINE_STYLE, PRIORITY_FLASH))
+                }
+            }
+            out.add(LineSpan(bandEnd, RESTORE_STYLE, PRIORITY_FLASH))
+            return out
+        }
+
+        /**
+         * 把全局 [flashStart]–[flashEnd] 换算成按行索引的列区间。
+         *
+         * 只有高亮涉及的行才会进 map，行数可能很大时不浪费内存。
+         */
+        private fun resolveFlash(c: Content): Map<Int, LineFlash>? {
+            val (fs, fe) = lock.withLock { flashStart to flashEnd }
+            if (fs < 0 || fe <= fs) return null
+            val total = c.length
+            if (total == 0) return null
+            val s = fs.coerceIn(0, total - 1)
+            val e = fe.coerceIn(s + 1, total)
+            val indexer = c.getIndexer()
+            val startPos = indexer.getCharPosition(s)
+            val endPos = indexer.getCharPosition(e)
+            if (startPos.line > endPos.line) return null
+
+            val out = HashMap<Int, LineFlash>(endPos.line - startPos.line + 1)
+            for (line in startPos.line..endPos.line) {
+                if (line < 0 || line >= c.lineCount) continue
+                val lineLen = c.getColumnCount(line)
+                val from = if (line == startPos.line) startPos.column else 0
+                val to = if (line == endPos.line) endPos.column else lineLen
+                out[line] = LineFlash(
+                    wordStart = from.coerceIn(0, lineLen),
+                    wordEnd = to.coerceIn(0, lineLen),
+                    lineEnd = lineLen
+                )
+            }
+            return out
         }
 
         private fun scanLine(c: Content, line: Int): ArrayList<Token> {
@@ -234,6 +357,22 @@ class JsonSpansLanguage(
     private fun scan(line: String): ArrayList<Token> = scanLine(line, maxTokensPerLine)
 
     companion object {
+    /**
+     * 跳转「整行浅色带」的样式：文字用正常前景色 + 浅背景色。
+     *
+     * `makeStyle(foregroundColorId, backgroundColorId, bold, italic, strike)`——
+     * 这是 Sora 官方支持的带背景写法，和搜索命中/语法着色走同一条渲染管线。
+     */
+    val FLASH_LINE_STYLE: Long =
+        TextStyle.makeStyle(ColorIds.FLASH_TEXT, ColorIds.FLASH_LINE, false, false, false)
+
+    /** 跳转「字段名深色块」的样式：同样带背景，但背景更重 */
+    val FLASH_WORD_STYLE: Long =
+        TextStyle.makeStyle(ColorIds.FLASH_TEXT, ColorIds.FLASH_WORD, false, false, false)
+
+    /** 用于在高亮结束处把背景「关掉」（只设前景色，背景 0 = 透明） */
+    val RESTORE_STYLE: Long = TextStyle.makeStyle(ColorIds.FLASH_TEXT)
+
     /** 单行分词：规则与旧的 JsonHighlighter 一致（键 = 紧跟冒号的字符串） */
     fun scanLine(line: String, maxTokens: Int = 4096): ArrayList<Token> {
         val out = ArrayList<Token>(16)
@@ -325,7 +464,19 @@ class JsonSpansLanguage(
         const val LITERAL = BASE + 3
         const val PUNCT = BASE + 4
 
+        /**
+         * 跳转高亮用的两个背景槽位。
+         *
+         * 背景色也必须走颜色 id（`Span` 只能存 id，不能存 ARGB），
+         * 因此同样由 [JsonEditorTheme] 显式写入。
+         */
+        const val FLASH_LINE = BASE + 5
+        const val FLASH_WORD = BASE + 6
+
+        /** 高亮区内的文字色；背景恢复时也用它，避免文字继承成上一种 token 的颜色 */
+        const val FLASH_TEXT = BASE + 7
+
         /** 全部自定义槽位，供配色层统一写入 */
-        val ALL = intArrayOf(KEY, STRING, NUMBER, LITERAL, PUNCT)
+        val ALL = intArrayOf(KEY, STRING, NUMBER, LITERAL, PUNCT, FLASH_LINE, FLASH_WORD, FLASH_TEXT)
     }
 }
