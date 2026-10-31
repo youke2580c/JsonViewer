@@ -107,4 +107,47 @@ class SafeFolderTest {
         assertNotNull(folded)
         assertSameIgnoringLineBreaks(text, folded!!)
     }
+
+    // ---------- 光标位置映射 ----------
+    //
+    // 折行只插入换行符，所以「光标在 anchon 处的字符」折行后应该还在同一个字符上；
+    // 少了这一步，替换完整篇后光标会停在原字符左边，看起来就是「光标错位」。
+
+    @Test
+    fun `anchor maps to the same character after folding`() {
+        val text = "{" + (1..500).joinToString(",") { "\"k$it\":$it" } + "}"
+        val anchors = listOf(0, 1, 10, 200, 1_000, text.length / 2, text.length - 1)
+
+        val folded = SafeFolder.fold(text, threshold = 200)!!
+        for (anchor in anchors) {
+            val mapped = SafeFolder.foldWithAnchor(text, threshold = 200, anchor = anchor)!!.anchor
+            val before = text[anchor]
+            val after = folded[mapped]
+            assertEquals("anchor=$anchor 应指向同一个字符", before, after)
+        }
+    }
+
+    @Test
+    fun `anchor before first break stays put`() {
+        // 折点在第 20 个逗号之后，anchor 远在它之前：一个换行都没插进来，映射后位置不变
+        val text = "{" + (1..50).joinToString(",") { "\"k$it\":$it" } + "}"
+        val result = SafeFolder.foldWithAnchor(text, threshold = 20, anchor = 3)!!
+        assertEquals(3, result.anchor)
+    }
+
+    @Test
+    fun `anchor shifts by number of inserted newlines before it`() {
+        val text = "{" + (1..500).joinToString(",") { "\"k$it\":$it" } + "}"
+        val anchor = text.length / 2
+        val result = SafeFolder.foldWithAnchor(text, threshold = 200, anchor = anchor)!!
+        val insertedBefore = result.text.substring(0, result.anchor).count { it == '\n' }
+        assertEquals(anchor + insertedBefore, result.anchor)
+        assertEquals(text[anchor], result.text[result.anchor])
+    }
+
+    @Test
+    fun `unfolded text returns null even with an anchor`() {
+        val text = """{"a": 1}"""
+        assertNull(SafeFolder.foldWithAnchor(text, threshold = 200, anchor = 2))
+    }
 }

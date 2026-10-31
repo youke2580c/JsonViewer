@@ -21,22 +21,41 @@ object SafeFolder {
     const val DEFAULT_THRESHOLD = 1200
 
     /**
+     * 折行结果。
+     *
+     * [anchor] 是「折行前 [anchor] 偏移的字符」在折行后文本里的位置。
+     * 折行只会**插入**换行符，所以只需要把光标往后挪「插在它前面的换行数」，
+     * 否则光标会停在原来那个字符的左侧，看起来就是「光标错位」。
+     */
+    class Result(val text: String, val anchor: Int)
+
+    /**
      * 折行整篇文本。
      *
      * @return 折行后的文本；不需要折行时返回 null（调用方据此跳过整次替换）
      */
-    fun fold(text: CharSequence, threshold: Int = DEFAULT_THRESHOLD): String? {
+    fun fold(text: CharSequence, threshold: Int = DEFAULT_THRESHOLD): String? =
+        foldWithAnchor(text, threshold, -1)?.text
+
+    /**
+     * 折行整篇文本，并把 [anchor]（折行前的字符偏移）映射到折行后的位置。
+     *
+     * @param anchor 需要保持位置的字符偏移；传 -1 表示不关心
+     */
+    fun foldWithAnchor(text: CharSequence, threshold: Int = DEFAULT_THRESHOLD, anchor: Int = -1): Result? {
         if (text.isEmpty()) return null
         var changed = false
         // 预估容量：折行只增加换行符，按每 32 字符一个估算已足够
         val sb = StringBuilder(text.length + text.length / 32 + 16)
+        // 已经插在 anchor 之前的换行数量
+        val shift = intArrayOf(0)
         var i = 0
         val n = text.length
         while (i <= n) {
             var e = i
             while (e < n && text[e] != '\n') e++
             if (e - i > threshold) {
-                if (foldLine(text, i, e, threshold, sb) > 0) changed = true
+                if (foldLine(text, i, e, threshold, sb, anchor, shift) > 0) changed = true
             } else {
                 sb.append(text, i, e)
             }
@@ -44,7 +63,9 @@ object SafeFolder {
             sb.append('\n')
             i = e + 1
         }
-        return if (changed) sb.toString() else null
+        if (!changed) return null
+        val mapped = if (anchor < 0) -1 else (anchor + shift[0]).coerceIn(0, sb.length)
+        return Result(sb.toString(), mapped)
     }
 
     /**
@@ -54,9 +75,19 @@ object SafeFolder {
      * 就近在最后一个可折点之后断行。折点取结构符，是为了让每一行都落在
      * 一个完整的「键值对 / 数组元素」边界上，看起来接近格式化后的样子。
      *
+     * @param anchor 光标偏移，用于统计插在它前面的换行数（见 [shift]）
+     * @param shift  单元素数组，累计「插在 anchor 之前的换行数」
      * @return 实际插入的换行数量，0 表示这段没有可折点、原样输出
      */
-    private fun foldLine(text: CharSequence, from: Int, to: Int, threshold: Int, sb: StringBuilder): Int {
+    private fun foldLine(
+        text: CharSequence,
+        from: Int,
+        to: Int,
+        threshold: Int,
+        sb: StringBuilder,
+        anchor: Int,
+        shift: IntArray
+    ): Int {
         var segStart = from
         var lastBreak = -1      // 可折位置：该下标处的字符之后可以断
         var inString = false
@@ -83,6 +114,7 @@ object SafeFolder {
             if (i - segStart >= threshold && lastBreak > segStart) {
                 sb.append(text, segStart, lastBreak + 1)
                 sb.append('\n')
+                if (anchor >= 0 && lastBreak + 1 <= anchor) shift[0]++
                 segStart = lastBreak + 1
                 lastBreak = -1
                 inserted++

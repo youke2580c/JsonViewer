@@ -3,7 +3,6 @@ package com.guaner.jsonviewer.editor
 import android.os.Bundle
 import io.github.rosemoe.sora.lang.Language
 import io.github.rosemoe.sora.lang.analysis.AnalyzeManager
-import io.github.rosemoe.sora.lang.analysis.SequenceUpdateRange
 import io.github.rosemoe.sora.lang.analysis.StyleReceiver
 import io.github.rosemoe.sora.lang.brackets.BracketsProvider
 import io.github.rosemoe.sora.lang.completion.CompletionPublisher
@@ -21,8 +20,6 @@ import io.github.rosemoe.sora.text.TextRange
 import io.github.rosemoe.sora.widget.SymbolPairMatch
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
-import kotlin.math.max
-import kotlin.math.min
 
 /** 语法 token 的样式优先级（同列冲突时低于跳转高亮） */
 private const val PRIORITY_TOKEN = 0
@@ -45,31 +42,19 @@ internal fun shouldColorLine(columns: Int): Boolean = columns in 1..COLORLESS_LI
 /** 语法着色种类，映射到编辑器配色方案里的颜色槽位 */
 enum class TokenKind { KEY, STRING, NUMBER, LITERAL, PUNCT }
 
-/** 合并两组行号并去重排序：换高亮时旧行要刷回普通样式，新行要上色 */
-private fun mergeLines(a: IntArray, b: IntArray): IntArray {
-    if (a.isEmpty()) return b
-    if (b.isEmpty()) return a
-    val all = IntArray(a.size + b.size)
-    a.copyInto(all)
-    b.copyInto(all, a.size)
-    all.sort()
-    var n = 0
-    for (i in all.indices) {
-        if (n == 0 || all[i] != all[n - 1]) all[n++] = all[i]
-    }
-    return all.copyOf(n)
-}
-
 /**
- * 面向整篇 JSON 的**逐行增量**着色语言。
+ * 面向整篇 JSON 的**逐行**着色语言。
  *
- * 两个性能约束叠在一起，决定了这里的写法：
+ * 性能约束说明：
  *
- * 1. `CodeEditor.setStyles()` 是**全篇**替换 —— 每次按键都重建一遍所有行的 span，
- *    造价跟行数成正比。五万行文档每敲一个字就要分配几十万个 `Span`，
- *    键盘直接卡死。所以这里只在「换文档 / 行数变化」时全量构建一次，
- *    平时编辑走 `updateStyles(styles, SequenceUpdateRange)` 只改受影响的那几行。
- * 2. 分词按行缓存：一次编辑只让受影响的几行失效，重扫成本与文档规模无关。
+ * 每次编辑都会重新下发一整份 [Styles]。曾经为了省开销改成「只重算受影响的行、
+ * 用 `updateStyles(range)` 增量下发」，结果整张 span 表被改坏：
+ * 删除一个字符后，`MappedSpanUpdater.shiftSpansOnSingleLineDelete` 会
+ * `recycle()` 掉被删区间内的 `Span` 对象，而这些对象又回到对象池被重新 `obtain`，
+ * 表里剩下的位置就对不上了 —— 表现为「文字被画成背景色、整段看不见、光标错位」。
+ *
+ * 现在回到全量下发，但**分词结果按行缓存**：一次编辑只让受影响的几行失效，
+ * 其余行直接复用 `Token` 列表，成本大头（扫描 + 分配对象）与文档规模无关。
  */
 class JsonSpansLanguage(
     private val maxTokensPerLine: Int = 4096
@@ -164,31 +149,16 @@ class JsonSpansLanguage(
         private var cache: Array<ArrayList<Token>?> = emptyArray()
         private val lock = ReentrantLock()
 
-        /** 当前下发给编辑器的样式表；增量更新时原地修改它内部的 span 表 */
-        private var styles: Styles? = null
-        private var mapped: MappedSpans? = null
-
         /** 跳转高亮区间（全局字符下标，`[flashStart, flashEnd)`）；-1 表示无 */
         private var flashStart = -1
         private var flashEnd = -1
 
-        /** 上一次高亮涉及的行，换高亮时要先把它们刷回普通样式 */
-        private var flashLines: IntArray = IntArray(0)
-
         fun applyFlashRange(start: Int, end: Int) {
-            val c = contentOrNull()
             lock.withLock {
                 flashStart = start
                 flashEnd = end
             }
-            if (c == null) {
-                invalidateAll()
-                return
-            }
-            val next = resolveFlash(c)?.keys?.toIntArray() ?: IntArray(0)
-            val old = flashLines
-            flashLines = next
-            updateLines(mergeLines(old, next))
+            fullDispatch()
         }
 
         override fun setReceiver(receiver: StyleReceiver?) {
@@ -199,7 +169,6 @@ class JsonSpansLanguage(
             lock.withLock {
                 reference = content
                 cache = arrayOfNulls(lineCountOf())
-                flashLines = IntArray(0)
             }
             fullDispatch()
             dispatchBrackets()
@@ -224,7 +193,6 @@ class JsonSpansLanguage(
                 // reference 由编辑器在 reset() 时更新；若编辑器换了 Content 而没走 reset，
                 // 这里也拿不到新对象，直接清空缓存等下一次派发重建即可。
                 cache = arrayOfNulls(lineCountOf())
-                flashLines = IntArray(0)
             }
             fullDispatch()
         }
@@ -232,42 +200,29 @@ class JsonSpansLanguage(
         override fun destroy() {
             receiver = null
             reference = null
-            styles = null
-            mapped = null
             lock.withLock { cache = emptyArray() }
         }
 
         /**
          * 内容变化后的统一切入点。
          *
-         * - 同一行内编辑（最常见）：只重算这一行，`updateStyles` 只让这一行的渲染缓存失效。
-         * - 跨行编辑（回车 / 粘贴多行 / 删除选区）：行号整体位移，span 表与行缓存的对应关系
-         *   需要重建，走一次全量。这类操作本来就低频。
+         * 只做一件事：让受影响的行缓存失效，然后整篇重发一次。
+         *
+         * 受影响范围取「编辑行前后各一行」：字符串可能跨行，前后行的分词结果
+         * 依赖相邻行（`"` 未闭合时整段都是字符串），必须一起重扫。
          */
         private fun onEdit(startLine: Int, endLine: Int) {
             val c = contentOrNull() ?: return fullDispatch()
-            val spanTable = mapped
-            if (spanTable == null || styles == null || spanTable.lineCount != c.lineCount) {
-                return fullDispatch()
-            }
-            if (startLine != endLine) {
-                lock.withLock {
-                    if (cache.size != c.lineCount) cache = arrayOfNulls(c.lineCount)
-                    for (i in (startLine - 1).coerceAtLeast(0)..(endLine + 1).coerceAtMost(c.lineCount - 1)) {
-                        cache[i] = null
-                    }
-                }
-                return fullDispatch()
-            }
-            // 字符串可能跨行，前后各带一行一起重扫
-            val lo = (startLine - 1).coerceAtLeast(0)
-            val hi = (startLine + 1).coerceAtMost(c.lineCount - 1)
             lock.withLock {
-                for (i in lo..hi) {
-                    if (i < cache.size) cache[i] = null
+                if (cache.size != c.lineCount) {
+                    cache = arrayOfNulls(c.lineCount)
+                } else {
+                    val lo = (startLine - 1).coerceAtLeast(0)
+                    val hi = (endLine + 1).coerceAtMost(c.lineCount - 1)
+                    for (i in lo..hi) cache[i] = null
                 }
             }
-            updateLines(IntArray(hi - lo + 1) { lo + it })
+            fullDispatch()
         }
 
         /** 当前内容（每次实时取，避免指向被替换掉的旧 Content） */
@@ -282,7 +237,9 @@ class JsonSpansLanguage(
         /**
          * 重新下发整篇样式。
          *
-         * 只在换文档、行数变化、清空缓存时走这里；日常编辑走 [updateLines]。
+         * 编辑、换高亮、换文档都走这里。看起来是「全量」，但分词结果按行缓存，
+         * 真正重扫的只有受影响的那几行；剩下的成本是给每行组装 span 列表，
+         * 与文档规模线性、无扫描、无正则，一万行也在毫秒级。
          */
         private fun fullDispatch() {
             val r = receiver ?: return
@@ -291,7 +248,6 @@ class JsonSpansLanguage(
             if (cache.size != lineCount) cache = arrayOfNulls(lineCount)
 
             val flash = resolveFlash(c)
-            flashLines = flash?.keys?.toIntArray() ?: IntArray(0)
 
             val builder = MappedSpans.Builder(lineCount)
             for (line in 0 until lineCount) {
@@ -302,43 +258,7 @@ class JsonSpansLanguage(
                 builder.determine(line)
             }
             builder.addNormalIfNull()
-            val spanTable = builder.build()
-            val newStyles = Styles(spanTable)
-            mapped = spanTable
-            styles = newStyles
-            r.setStyles(this, newStyles)
-        }
-
-        /**
-         * 只重算并下发指定的几行。
-         *
-         * 关键点：`MappedSpans.modify().setSpansOnLine()` 是**原地**改 span 表，
-         * 配合 `updateStyles(..., SequenceUpdateRange)` 只让这几行的渲染缓存失效 ——
-         * 整个过程的成本与文档总行数无关。
-         */
-        private fun updateLines(lines: IntArray) {
-            val r = receiver ?: return
-            val c = contentOrNull() ?: return
-            val spanTable = mapped ?: return fullDispatch()
-            val currentStyles = styles ?: return fullDispatch()
-            if (spanTable.lineCount != c.lineCount) return fullDispatch()
-            if (lines.isEmpty()) return
-
-            val flash = resolveFlash(c)
-            val modifier = spanTable.modify()
-            var lo = Int.MAX_VALUE
-            var hi = -1
-            for (line in lines) {
-                if (line < 0 || line >= c.lineCount) continue
-                lock.withLock { if (line < cache.size) cache[line] = null }
-                val spans = lineSpans(c, line, flash?.get(line))
-                if (spans.isEmpty()) continue
-                modifier.setSpansOnLine(line, spans)
-                lo = min(lo, line)
-                hi = max(hi, line)
-            }
-            if (hi < 0) return
-            r.updateStyles(this, currentStyles, SequenceUpdateRange(lo, hi))
+            r.setStyles(this, Styles(builder.build()))
         }
 
         /**

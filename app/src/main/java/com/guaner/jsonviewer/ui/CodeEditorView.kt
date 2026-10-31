@@ -84,8 +84,16 @@ class CodeEditorView @JvmOverloads constructor(
         // 关闭自动补全：JSON 里自动补全反而容易改坏内容（此开关不开放给用户）
         props.apply {
             autoCompletionOnComposing = false
-            disallowSuggestions = true
+            // **不要用 disallowSuggestions**：Sora 在 `EditorInputConnection.setSelection()`
+            // 和 `updateSelection()` 里拿它当总开关 —— 置 true 后输入法发来的
+            // 「移动光标」会被直接 return false 丢掉，`updateSelection` 还会给输入法
+            // 回一个随机 index，输入法彻底不知道光标在哪。
+            // 禁联想改用 inputType 上的 NO_SUGGESTIONS 标志，效果一样但不影响光标同步。
+            disallowSuggestions = false
         }
+        inputType = android.text.InputType.TYPE_CLASS_TEXT or
+            android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+            android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
 
         // 不让系统把编辑器内容塞进 View 状态 Bundle：
         // 几百 KB 的文本会在切后台 / 转屏时触发一次巨大的 Parcel 写入（卡顿甚至崩溃）。
@@ -120,9 +128,14 @@ class CodeEditorView @JvmOverloads constructor(
             onTextChanged?.invoke()
             // 每次编辑都可能让撤销栈从「空」变「非空」，顺手同步按钮可用态
             dispatchUndoState()
-            // 粘贴一大段压缩 JSON 后行会突然变成几十万字符：此时官方软换行要 O(n²) 断行，
-            // 必须尽快折短。检查本身很轻（只扫行宽），所以放在输入路径末尾防抖调度。
-            scheduleFoldCheck()
+            // 只有「一次塞进来一大段」才值得检查折行（粘贴、拖入、输入法整句上屏）。
+            // 删除 / 逐字输入绝不触发：折行要整篇替换文本，光标和滚动都会跳，
+            // 用户只是删了一个字符却看到「前面的内容都不见了」，就是这么来的。
+            if (event.action == ContentChangeEvent.ACTION_INSERT &&
+                event.changedText.length >= FOLD_TRIGGER_CHARS
+            ) {
+                scheduleFoldCheck()
+            }
         }
 
         applyThemeFromManager()
@@ -588,6 +601,9 @@ class CodeEditorView @JvmOverloads constructor(
 
     fun setWrap(wrap: Boolean) {
         userWrap = wrap
+        // 先折行再开换行：`setWordwrap(true)` 会立刻按软换行整篇断一次，
+        // 遇到几十万字符的单行要 O(n²) 卡死，折成短行之后它才跑得动。
+        if (wrap) foldLongLinesIfNeeded()
         if (isWordwrap != wrap) setWordwrap(wrap, false)
         if (wrap) scheduleFoldCheck()
     }
@@ -620,17 +636,24 @@ class CodeEditorView @JvmOverloads constructor(
         val len = content.length
         if (len < FOLD_MIN_TOTAL_CHARS) return
         if (!hasLineWiderThan(content, SafeFolder.DEFAULT_THRESHOLD)) return
-        val folded = SafeFolder.fold(content, SafeFolder.DEFAULT_THRESHOLD) ?: return
+        // 折行只插换行、不删字符：把光标位置带过去，否则替换完整篇光标会停在原字符左边，
+        // 看起来就是「光标位置不对」。滚动位置同理，直接沿用原来的像素偏移即可。
+        val cursorIndex = cursor.left().index.coerceIn(0, len)
+        val result = SafeFolder.foldWithAnchor(content, SafeFolder.DEFAULT_THRESHOLD, cursorIndex) ?: return
         folding = true
         suppressCallback = true
         try {
-            content.replace(0, len, folded)
+            content.replace(0, len, result.text)
         } catch (e: Throwable) {
             return
         } finally {
             suppressCallback = false
             folding = false
         }
+        // 折行把行数整个改了一遍，语言层的行缓存与下线样式都已过时，推倒重建
+        language.notifyContentReplaced()
+        // 折行后行号全部变了，光标要按字符偏移重新定位
+        runCatching { setCursorOffset(result.anchor.coerceIn(0, content.length)) }
         currentError?.let { applyDiagnostics(it) }
         // 折完还剩超长行，说明那是一整段超长字符串（引号内不能动），只能如实提示
         notifyAutoFolded(hasLineWiderThan(content, HUGE_LINE_CHARS))
@@ -855,6 +878,14 @@ class CodeEditorView @JvmOverloads constructor(
 
         /** 粘贴/输入停顿多久后检查一次超长行 */
         const val FOLD_CHECK_DELAY_MS = 300L
+
+        /**
+         * 一次插入多少字符才值得检查折行。
+         *
+         * 与 [SafeFolder.DEFAULT_THRESHOLD] 对齐：一次插入连一行都撑不满时，
+         * 不可能产生需要折的超长行，就不必为它整篇替换一次文本。
+         */
+        const val FOLD_TRIGGER_CHARS = SafeFolder.DEFAULT_THRESHOLD
 
         /** 折完还剩这么长的行，说明是不可折的超长字符串，提示用户该行换行会慢 */
         const val HUGE_LINE_CHARS = 20_000
