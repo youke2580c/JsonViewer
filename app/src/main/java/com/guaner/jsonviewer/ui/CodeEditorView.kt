@@ -218,15 +218,15 @@ class CodeEditorView @JvmOverloads constructor(
     /**
      * 跳转并高亮一段区间（大纲 / 快捷跳转 / 搜索定位）。
      *
-     * 高亮分两层：
-     * - **整行浅色底**：从字段所在行首到行尾，走诊断区 `SEVERITY_TYPO`
-     * - **字段名实色底**：只覆盖 [start]–[end]（键名或值本身），由 [onDraw] 自己画矩形
+     * 高亮分两层，**全部由 [onDraw] 自绘色块**：
+     * - **整行浅色带**：铺满整个行高，从行首一直到控件右边缘
+     * - **字段名实色块**：只覆盖 [start]–[end]（键名或值本身），压在整行带之上
      *
-     * 为什么字段名不用诊断区？
+     * 为什么不用诊断区？
      * Sora 的 `EditorRenderer.drawDiagnosticIndicators` 里是
      * `severityColorId = sDiagnosticsColorMapping[severity]; if (severityColorId == 0) continue;`
-     * 而 `SEVERITY_NONE = 0` 映射到 0 → 整段被跳过，且它画的只是波浪线/下划线，不是背景块。
-     * 所以字段名的「实色底」只能自己按 `Layout` 的行列坐标绘制。
+     * — `SEVERITY_NONE = 0` 被整段跳过；且它画的只是波浪线/下划线，**从来不是背景块**。
+     * 之前整行用 `SEVERITY_TYPO` 看似有效，实际只是文字底下一条几乎看不见的细线。
      */
     fun flashRange(start: Int, end: Int) {
         val content = getText()
@@ -250,9 +250,8 @@ class CodeEditorView @JvmOverloads constructor(
         flashStart = s
         flashEnd = e
 
-        applyDiagnostics(currentError)
         jumpTo(s, takeFocus = false)
-        // 字段名实色底由 onDraw 自绘，这里必须显式重绘一次
+        // 两层色块都由 onDraw 自绘，这里必须显式重绘一次
         invalidate()
         handler.removeCallbacks(clearFlashRunnable)
         handler.postDelayed(clearFlashRunnable, FLASH_MS)
@@ -267,46 +266,86 @@ class CodeEditorView @JvmOverloads constructor(
         flashEnd = -1
         flashLineStart = -1
         flashLineEnd = -1
-        applyDiagnostics(currentError)
         invalidate()
     }
 
-    // ---------- 跳转高亮：字段名实色底（自绘） ----------
+    // ---------- 跳转高亮：两层自绘色块 ----------
 
-    private val flashPaint = android.graphics.Paint().apply {
+    private val flashLinePaint = Paint().apply {
         isAntiAlias = true
-        style = android.graphics.Paint.Style.FILL
+        style = Paint.Style.FILL
     }
-    private val flashRect = android.graphics.RectF()
+    private val flashWordPaint = Paint().apply {
+        isAntiAlias = true
+        style = Paint.Style.FILL
+    }
+    private val flashRect = RectF()
 
     /**
-     * 在编辑器完成绘制后，把跳转目标（字段名/值）压一层实色底。
+     * 在编辑器完成绘制后，铺两层跳转高亮色块。
      *
-     * 位置从 [getLayout] 拿：先按字符下标算出行号与列号，再 `getCharLayoutOffset(line, column)`
-     * 换成相对整篇内容的 `[x, y]`，最后减去滚动偏移。这样软换行成多行时也能逐行画对。
+     * 行坐标从 [getLayout] 拿：
+     * - 纵向直接用 `getRowTop(rowIndex)` / `getRowBottom(rowIndex)`，得到**整行高度**，
+     *   正好铺满行间空隙，看起来是一条完整的色带而不是细线
+     * - 横向用 `getCharLayoutOffset(line, column)` 取字符 x 坐标（软换行时每段各画一块）
+     *
+     * 两层都不画文字，只在 `super.onDraw` 之后叠色块，所以文字始终在最上层、可读性不受影响。
      */
-    override fun onDraw(canvas: android.graphics.Canvas) {
+    override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        drawFlashLine(canvas)
+        drawFlashWord(canvas)
+    }
+
+    /** 整行浅色带：铺满行高，从行首一直延伸到控件右边缘 */
+    private fun drawFlashLine(canvas: Canvas) {
+        if (flashLineStart < 0 || flashLineEnd < flashLineStart) return
+        val content = getText()
+        val len = content.length
+        if (len == 0) return
+        val layout = runCatching { getLayout() }.getOrNull() ?: return
+        val line = runCatching {
+            content.getIndexer().getCharPosition(flashLineStart.coerceIn(0, len - 1)).line
+        }.getOrDefault(-1)
+        if (line < 0) return
+
+        flashLinePaint.color = getColorScheme().getColor(FLASH_LINE_COLOR_ID)
+        val offsetY = getOffsetY()
+        val right = width.toFloat()
+
+        for (rowIndex in getFirstVisibleRow()..getLastVisibleRow()) {
+            val row = runCatching { layout.getRowAt(rowIndex) }.getOrNull() ?: continue
+            if (row.lineIndex != line) continue
+            val top = (getRowTop(rowIndex) - offsetY).toFloat()
+            // 相邻可见行之间补 1px，避免两条色带之间出现发丝缝
+            flashRect.set(0f, top, right, (getRowBottom(rowIndex) - offsetY).toFloat() + 1f)
+            canvas.drawRect(flashRect, flashLinePaint)
+        }
+    }
+
+    /** 字段名实色块：只覆盖目标区间，压在整行色带之上 */
+    private fun drawFlashWord(canvas: Canvas) {
         if (flashStart < 0 || flashEnd <= flashStart) return
         val content = getText()
         val len = content.length
         if (len == 0) return
         val s = flashStart.coerceIn(0, len - 1)
         val e = flashEnd.coerceIn(s + 1, len)
-        // Layout 可能还没就绪（首次布局中），拿不到就静默跳过，不抛异常打断主流程
         val layout = runCatching { getLayout() }.getOrNull() ?: return
         val indexer = content.getIndexer()
 
         val startPos = indexer.getCharPosition(s)
         val endPos = indexer.getCharPosition(e)
 
-        flashPaint.color = getColorScheme().getColor(EditorColorScheme.STATIC_SPAN_BACKGROUND)
+        flashWordPaint.color = getColorScheme().getColor(EditorColorScheme.STATIC_SPAN_BACKGROUND)
 
         val offsetX = getOffsetX()
         val offsetY = getOffsetY()
-        val radius = getDpUnit() * 2f
+        val radius = getDpUnit() * 2.5f
         val padX = getDpUnit() * 1.5f
-        val padY = getDpUnit() * 0.5f
+        // 纵向内缩：让色块比整行带矮一点，形成「带中带」的层次，又不至于压住上下行文字
+        val insetY = getDpUnit() * 1.5f
+        val charW = measureCharWidth()
 
         // 只扫可视行：跳转后目标一定在屏上，无需遍历全文
         val firstRow = getFirstVisibleRow()
@@ -323,19 +362,34 @@ class CodeEditorView @JvmOverloads constructor(
             )
             if (colTo <= colFrom) continue
 
-            val from = runCatching { layout.getCharLayoutOffset(line, colFrom) }.getOrNull() ?: continue
-            val to = runCatching { layout.getCharLayoutOffset(line, colTo) }.getOrNull() ?: continue
+            // 横向用「相对本绘制行起始列」的等宽字宽累加。
+            // 不用 getCharLayoutOffset：它只接受逻辑行号，软换行时会把整行拼成一行算，坐标会跑到屏幕外。
+            val xFrom = (colFrom - row.startColumn) * charW
+            val xTo = (colTo - row.startColumn) * charW
+            val top = (getRowTop(rowIndex) - offsetY).toFloat()
+            val bottom = (getRowBottom(rowIndex) - offsetY).toFloat()
             flashRect.set(
-                from[0] - offsetX - padX,
-                from[1] - offsetY + padY,
-                to[0] - offsetX + padX,
-                to[1] - offsetY - padY
+                xFrom - offsetX - padX,
+                top + insetY,
+                xTo - offsetX + padX,
+                bottom - insetY
             )
             if (flashRect.right > 0f && flashRect.left < width) {
-                canvas.drawRoundRect(flashRect, radius, radius, flashPaint)
+                canvas.drawRoundRect(flashRect, radius, radius, flashWordPaint)
             }
         }
     }
+
+    /** 单个字符的等宽像素；字体通常是等宽字体，量一个 "M" 即可 */
+    private fun measureCharWidth(): Float {
+        return runCatching {
+            val p = Paint(Paint.ANTI_ALIAS_FLAG)
+            p.typeface = getTypefaceText()
+            p.textSize = getTextSizePx()
+            p.measureText("M")
+        }.getOrDefault(getTextSizePx() * 0.6f)
+    }
+
 
     // ---------- 错误与搜索高亮 ----------
 
@@ -548,16 +602,8 @@ class CodeEditorView @JvmOverloads constructor(
                     }
                 }
             }
-            // 跳转高亮只下发「整行浅底」；字段名实色底由 onDraw 自绘（诊断区画不出背景块）
-            if (flashLineStart >= 0 && flashLineEnd > flashLineStart) {
-                container.addDiagnostic(
-                    DiagnosticRegion(
-                        flashLineStart.coerceIn(0, len),
-                        flashLineEnd.coerceIn(0, len),
-                        DiagnosticRegion.SEVERITY_TYPO
-                    )
-                )
-            }
+            // 跳转高亮（整行色带 + 字段名色块）已全部改由 onDraw 自绘，
+            // 这里不再下发诊断区——诊断区只会画波浪线/下划线，画不出色块。
         }
         // 直接复用编辑器自己的诊断通道：语言分析器只负责着色，诊断由本视图按需覆盖
         setDiagnostics(container)
@@ -822,6 +868,9 @@ class CodeEditorView @JvmOverloads constructor(
     private companion object {
         /** 单次最多下发的搜索命中诊断区数量 */
         const val MAX_SEARCH_REGIONS = 200
+
+        /** 跳转「整行色带」用的自定义配色槽位（定义在主题里，避免两处写死不同的数字） */
+        const val FLASH_LINE_COLOR_ID = JsonEditorTheme.FLASH_LINE_COLOR_ID
 
         /** 定位闪烁高亮的持续时间 */
         const val FLASH_MS = 1_600L

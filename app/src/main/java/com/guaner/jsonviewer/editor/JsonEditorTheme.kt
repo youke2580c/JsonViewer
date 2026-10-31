@@ -16,6 +16,14 @@ import io.github.rosemoe.sora.widget.schemes.EditorColorScheme
  */
 object JsonEditorTheme {
 
+    /**
+     * 跳转「整行色带」的自定义配色槽位。
+     *
+     * 必须大于 `EditorColorScheme.END_COLOR_ID`（= 66），否则会覆盖内置槽位。
+     * 与 `CodeEditorView.FLASH_LINE_COLOR_ID` 保持一致。
+     */
+    const val FLASH_LINE_COLOR_ID = 70
+
     /** 按当前主题生成一份配色方案 */
     fun schemeOf(colors: ThemeColors): EditorColorScheme {
         val scheme = EditorColorScheme()
@@ -23,9 +31,11 @@ object JsonEditorTheme {
         val overlay = translucent(colors.text, if (isDark(colors.background)) 0.12f else 0.07f)
         val overlayStrong = translucent(colors.accent, 0.22f)
 
-        // 跳转高亮的两层：整行用很淡的强调色，字段名用实色强调色（自绘圆角块，要压得住整行）
-        val jumpLine = translucent(colors.accent, if (isDark(colors.background)) 0.09f else 0.06f)
-        val jumpWord = translucent(colors.accent, if (isDark(colors.background)) 0.55f else 0.40f)
+        // 跳转高亮的两层色块（都是「实色」而不是透明叠加，才看得出是块而不是线）
+        // - 整行带：压得足够可见，但不抢文字；深色底用强调色 16%，浅色底 11%
+        // - 字段名块：明显更重，且必须和整行带拉开差距
+        val jumpLine = translucent(colors.accent, if (isDark(colors.background)) 0.16f else 0.11f)
+        val jumpWord = translucent(colors.accent, if (isDark(colors.background)) 0.62f else 0.46f)
 
         with(scheme) {
             // ---------- 基础 ----------
@@ -70,7 +80,7 @@ object JsonEditorTheme {
             // ---------- 诊断（错误 / 警告 / 拼写） ----------
             setColor(EditorColorScheme.PROBLEM_ERROR, colors.jsonBoolean)
             setColor(EditorColorScheme.PROBLEM_WARNING, colors.jsonNumber)
-            // PROBLEM_TYPO 同时用于「跳转整行浅底」，所以用淡强调色而不是灰文字色
+            // PROBLEM_TYPO 现在只用于「搜索非当前命中」，用淡强调色
             setColor(EditorColorScheme.PROBLEM_TYPO, jumpLine)
 
             // ---------- 自动补全与文本操作弹窗（默认白底，深色主题下会刺眼） ----------
@@ -82,11 +92,15 @@ object JsonEditorTheme {
             setColor(EditorColorScheme.TEXT_ACTION_WINDOW_BACKGROUND, colors.surface)
             setColor(EditorColorScheme.TEXT_ACTION_WINDOW_ICON_COLOR, colors.accent)
 
-            // ---------- 静态 span（大纲跳转的字段名底色）/ 粘性分隔线 ----------
+            // ---------- 静态 span（大纲跳转的字段名色块）/ 粘性分隔线 ----------
             // CodeEditorView.onDraw 自绘字段名圆角块时读的就是 STATIC_SPAN_BACKGROUND
             setColor(EditorColorScheme.STATIC_SPAN_BACKGROUND, jumpWord)
             setColor(EditorColorScheme.STATIC_SPAN_FOREGROUND, colors.text)
             setColor(EditorColorScheme.STICKY_SCROLL_DIVIDER, colors.gutter)
+
+            // ---------- 跳转「整行色带」（自定义槽位） ----------
+            // 与 CodeEditorView.FLASH_LINE_COLOR_ID 必须保持一致
+            setColor(FLASH_LINE_COLOR_ID, jumpLine)
 
         }
         return scheme
