@@ -8,11 +8,13 @@ import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.MotionEvent
 import android.view.ViewConfiguration
+import android.widget.Toast
 import com.guaner.jsonviewer.editor.JsonEditorTheme
 import com.guaner.jsonviewer.editor.JsonSpansLanguage
 import com.guaner.jsonviewer.data.AppSettings
 import com.guaner.jsonviewer.json.JsonError
 import com.guaner.jsonviewer.json.JsonLimits
+import com.guaner.jsonviewer.text.SafeFolder
 import com.guaner.jsonviewer.theme.ThemeColors
 import com.guaner.jsonviewer.theme.ThemeManager
 import io.github.rosemoe.sora.event.ContentChangeEvent
@@ -118,6 +120,9 @@ class CodeEditorView @JvmOverloads constructor(
             onTextChanged?.invoke()
             // 每次编辑都可能让撤销栈从「空」变「非空」，顺手同步按钮可用态
             dispatchUndoState()
+            // 粘贴一大段压缩 JSON 后行会突然变成几十万字符：此时官方软换行要 O(n²) 断行，
+            // 必须尽快折短。检查本身很轻（只扫行宽），所以放在输入路径末尾防抖调度。
+            scheduleFoldCheck()
         }
 
         applyThemeFromManager()
@@ -177,11 +182,20 @@ class CodeEditorView @JvmOverloads constructor(
         // 几十万字符的文档要白白多断一次行，还多一次 layoutBusy 空窗。
         if (isWordwrap != userWrap) setWordwrap(userWrap, false)
         suppressCallback = true
+        var folded = false
         try {
-            setText(value)
+            // 内容里若有一行几十万字符，`setText()` 会按软换行整体断一遍 ——
+            // 官方 `breakLine` 是 O(n²)，这一步能卡几十秒。先把它折成短行再灌进去。
+            val prepared = if (userWrap && value.length >= FOLD_MIN_TOTAL_CHARS) {
+                SafeFolder.fold(value)?.also { folded = true } ?: value
+            } else {
+                value
+            }
+            setText(prepared)
         } finally {
             suppressCallback = false
         }
+        if (folded) notifyAutoFolded()
         oversizeWarned = getText().length > JsonLimits.MAX_INPUT_CHARS
         if (forceTop) {
             setCursorOffset(0)
@@ -190,8 +204,8 @@ class CodeEditorView @JvmOverloads constructor(
         currentError?.let { applyDiagnostics(it) }
         // setText() 会新建 Content 实例，撤销栈也跟着重置，这里按设置恢复一次
         getText().setUndoEnabled(AppSettings.editorUndo)
-        // 编辑器换了一整篇新内容，旧的行缓存全部作废，重新下发一次着色
-        language.notifyContentReplaced()
+        // `setText()` 内部已经走了一次 `AnalyzeManager.reset()`，着色会按新内容全量重建；
+        // 这里**不要**再调 `language.notifyContentReplaced()`，否则同一篇内容要白白构建两次。
         // 程序性替换（导入 / 格式化 / 清空 / 恢复）不会走用户编辑的回调，
         // 但调用方依赖它去重新解析、刷新表单与大纲，所以这里主动通知一次。
         onTextChanged?.invoke()
@@ -528,7 +542,9 @@ class CodeEditorView @JvmOverloads constructor(
         setBackgroundColor(themeColors.background)
         applyFontSize((ThemeManager.codeFontSize * currentScale).coerceIn(8f, 40f))
         userWrap = ThemeManager.codeWrap
-        setWordwrap(userWrap, false)
+        // 只在换行模式真的变了时才重建布局：`setWordwrap()` 内部是整篇 `createLayout()`，
+        // 每次 onResume / 切主题都无条件调一遍，几十万字符的文档就白等一次重排。
+        if (isWordwrap != userWrap) setWordwrap(userWrap, false)
         applyEditorOptions()
         applyDiagnostics(currentError)
     }
@@ -572,7 +588,66 @@ class CodeEditorView @JvmOverloads constructor(
 
     fun setWrap(wrap: Boolean) {
         userWrap = wrap
-        setWordwrap(wrap, false)
+        if (isWordwrap != wrap) setWordwrap(wrap, false)
+        if (wrap) scheduleFoldCheck()
+    }
+
+    // ---------- 超长行折行 ----------
+    //
+    // 背景：Sora 的 `WordwrapLayout.breakLine` 每找一个断点都要从**剩余整行**量一次宽度，
+    // 单行断行是 O(n²)。50 万字符的压缩 JSON 打开或敲一个字都能卡几十秒。
+    // 官方换行没有写错，是这种输入超出设计；解法只能是别把这种行交给它。
+    //
+    // 折行只插换行（结构符之后的空白在 JSON 里无意义），字符串内部一字不動，
+    // 所以内容语义不变，且能一次撤销。
+
+    /** 折行过程中置 true，避免自己触发的 ContentChangeEvent 再次进入 */
+    private var folding = false
+
+    /** 防抖：连续输入/粘贴时只在停手后检查一次 */
+    private val foldCheckRunnable = Runnable { foldLongLinesIfNeeded() }
+
+    private fun scheduleFoldCheck() {
+        if (!userWrap) return
+        handler.removeCallbacks(foldCheckRunnable)
+        handler.postDelayed(foldCheckRunnable, FOLD_CHECK_DELAY_MS)
+    }
+
+    /** 文档里存在超过折行阈值的行时，就地折一次 */
+    private fun foldLongLinesIfNeeded() {
+        if (folding || !userWrap) return
+        val content = getText()
+        val len = content.length
+        if (len < FOLD_MIN_TOTAL_CHARS) return
+        if (!hasLineWiderThan(content, SafeFolder.DEFAULT_THRESHOLD)) return
+        val folded = SafeFolder.fold(content, SafeFolder.DEFAULT_THRESHOLD) ?: return
+        folding = true
+        suppressCallback = true
+        try {
+            content.replace(0, len, folded)
+        } catch (e: Throwable) {
+            return
+        } finally {
+            suppressCallback = false
+            folding = false
+        }
+        currentError?.let { applyDiagnostics(it) }
+        notifyAutoFolded()
+        onTextChanged?.invoke()
+        dispatchUndoState()
+    }
+
+    private fun hasLineWiderThan(content: io.github.rosemoe.sora.text.Content, limit: Int): Boolean {
+        val n = content.lineCount
+        for (i in 0 until n) {
+            if (content.getColumnCount(i) > limit) return true
+        }
+        return false
+    }
+
+    private fun notifyAutoFolded() {
+        if (!userWrap) return
+        Toast.makeText(context, "检测到超长行，已自动折行以便编辑（内容不变）", Toast.LENGTH_SHORT).show()
     }
 
     // ---------- 双指缩放（Sora 默认不支持，这里补上） ----------
@@ -755,6 +830,7 @@ class CodeEditorView @JvmOverloads constructor(
 
     override fun onDetachedFromWindow() {
         handler.removeCallbacks(clearFlashRunnable)
+        handler.removeCallbacks(foldCheckRunnable)
         super.onDetachedFromWindow()
     }
 
@@ -767,5 +843,11 @@ class CodeEditorView @JvmOverloads constructor(
 
         /** 判定「点在滚动条上」的横向容差（dp）；滚动条本身更窄，留点余量好按 */
         const val SCROLL_BAR_TOUCH_DP = 22f
+
+        /** 文档小于这个规模就不做折行检查：小文本断行本来就快，不值得多扫一遍 */
+        const val FOLD_MIN_TOTAL_CHARS = 32 * 1024
+
+        /** 粘贴/输入停顿多久后检查一次超长行 */
+        const val FOLD_CHECK_DELAY_MS = 300L
     }
 }
