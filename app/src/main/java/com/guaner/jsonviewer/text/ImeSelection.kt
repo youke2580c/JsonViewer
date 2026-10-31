@@ -38,4 +38,28 @@ object ImeSelection {
         // 却经常借这个形态。光标停在跨度右端，和常规编辑器一致。
         return if (hi - lo == 1) hi else null
     }
+
+    /**
+     * 这条 line 的**所有** row 是否都在屏幕里。
+     *
+     * 用来决定「移动完光标要不要再算一遍像素坐标」：`getCharLayoutOffset()` 要先沿
+     * rowTable 线性走到目标列（见调用方的注释），所以能不调用就别调用。
+     *
+     * @param line 目标逻辑行号
+     * @param firstVisibleLine 屏幕上第一个可见的逻辑行号
+     * @param lastVisibleLine 屏幕上最后一个可见的逻辑行号
+     * @param wordwrap 是否开启了软换行
+     */
+    fun wholeLineVisible(
+        line: Int,
+        firstVisibleLine: Int,
+        lastVisibleLine: Int,
+        wordwrap: Boolean
+    ): Boolean = if (wordwrap) {
+        // 软换行下一条 line 占多个 row：首末两行可能只露一半，只有严格夹在中间才整条可见
+        line > firstVisibleLine && line < lastVisibleLine
+    } else {
+        // 一行就是一个 row，行号在范围内就必然可见
+        line in firstVisibleLine..lastVisibleLine
+    }
 }

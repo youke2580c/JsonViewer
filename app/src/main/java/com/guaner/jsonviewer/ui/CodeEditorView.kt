@@ -234,7 +234,7 @@ class CodeEditorView @JvmOverloads constructor(
         try {
             // 内容里若有一行几十万字符，`setText()` 会按软换行整体断一遍 ——
             // 官方 `breakLine` 是 O(n²)，这一步能卡几十秒。先把它折成短行再灌进去。
-            val prepared = if (autoFoldEnabled && userWrap && value.length >= FOLD_MIN_TOTAL_CHARS) {
+            val prepared = if (autoFoldEnabled && userWrap) {
                 foldSafely(value)?.also { folded = true }?.text ?: value
             } else {
                 value
@@ -592,6 +592,8 @@ class CodeEditorView @JvmOverloads constructor(
             // 滚动/重绘不再逐字重量。这是超长行「不换行也能滑得动」的关键。
             cacheRenderNodeForLongLines = true
             highlightMatchingDelimiters = AppSettings.editorHighlightBrackets
+            // 见 IME_CONTEXT_CHARS：默认值 500000 会让每次输入法回调都复制几十万字符
+            maxIPCTextLength = IME_CONTEXT_CHARS
         }
     }
 
@@ -698,7 +700,7 @@ class CodeEditorView @JvmOverloads constructor(
         }
         val content = getText()
         val len = content.length
-        if (len < FOLD_MIN_TOTAL_CHARS) return
+        if (len <= SafeFolder.DEFAULT_THRESHOLD) return
         if (!hasLineWiderThan(content, SafeFolder.DEFAULT_THRESHOLD)) return
         // 折行只插换行、不删字符：把光标位置带过去，否则替换完整篇光标会停在原字符左边，
         // 看起来就是「光标位置不对」。滚动位置同理，直接沿用原来的像素偏移即可。
@@ -816,28 +818,75 @@ class CodeEditorView @JvmOverloads constructor(
          */
         private var composing = false
 
+        private fun beginComposing() {
+            imeComposing = true
+            composing = true
+        }
+
+        private fun endComposing() {
+            imeComposing = false
+            composing = false
+        }
+
         override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
-            imeComposing = !text.isNullOrEmpty()
-            composing = imeComposing
+            if (text.isNullOrEmpty()) endComposing() else beginComposing()
             return super.setComposingText(text, newCursorPosition)
         }
 
         override fun finishComposingText(): Boolean {
-            imeComposing = false
-            composing = false
+            endComposing()
             return super.finishComposingText()
         }
 
-        private fun isComposing(): Boolean = composing
+        override fun setComposingRegion(start: Int, end: Int): Boolean {
+            // 少数输入法用 setComposingRegion 开局；只有底层真的承接住了才算在组词
+            val accepted = super.setComposingRegion(start, end)
+            if (accepted) beginComposing()
+            return accepted
+        }
+
+        override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+            // 有些输入法（百度属于这一类）上屏时不调 finishComposingText，只调 commitText。
+            // 组成状态一旦卡在 true，之后所有左右键都会被当成「还在组词」放行给候选区，
+            // 表现就是「明明按了移动光标，光标纹丝不动」。
+            endComposing()
+            return super.commitText(text, newCursorPosition)
+        }
+
+        // ---- 上下文文本：按字符数封顶 ----
+        //
+        // `getSurroundingText` 内部走的是「不受 IPC 上限约束」的那条路径：
+        // 输入法给多大的 length，Sora 就复制多大的文本。百度这类输入法在刷新候选时会
+        // 一次要很长的一段（乃至到文档末尾），几十万字符的跨行拼接每次几十毫秒，
+        // 一移动光标就来好几趟 —— 这是大文本卡顿里占比最大的一块。
+        override fun getTextBeforeCursor(length: Int, flags: Int): CharSequence? =
+            super.getTextBeforeCursor(length.coerceAtMost(IME_CONTEXT_CHARS), flags)
+
+        override fun getTextAfterCursor(length: Int, flags: Int): CharSequence? =
+            super.getTextAfterCursor(length.coerceAtMost(IME_CONTEXT_CHARS), flags)
+
+        override fun getSurroundingText(beforeLength: Int, afterLength: Int, flags: Int): android.view.inputmethod.SurroundingText =
+            (super.getSurroundingText(
+                beforeLength.coerceAtMost(IME_CONTEXT_CHARS),
+                afterLength.coerceAtMost(IME_CONTEXT_CHARS),
+                flags
+            ) ?: android.view.inputmethod.SurroundingText("", 0, 0, 0))
 
         override fun sendKeyEvent(event: KeyEvent): Boolean {
-            if (event.action == KeyEvent.ACTION_DOWN && !isComposing()) {
-                val step = when (event.keyCode) {
-                    KeyEvent.KEYCODE_DPAD_LEFT -> -1
-                    KeyEvent.KEYCODE_DPAD_RIGHT -> 1
-                    else -> 0
+            val key = event.keyCode
+            if (key != KeyEvent.KEYCODE_DPAD_LEFT && key != KeyEvent.KEYCODE_DPAD_RIGHT) {
+                return super.sendKeyEvent(event)
+            }
+            val step = if (key == KeyEvent.KEYCODE_DPAD_RIGHT) 1 else -1
+            when (event.action) {
+                KeyEvent.ACTION_DOWN -> {
+                    if (composing) return true      // 组词中：左右键归候选区，但别再往下转发
+                    return moveCursorBy(step)
                 }
-                if (step != 0) return moveCursorBy(step)
+                // DOWN 已经吃掉并移动过了，UP 必须一并吞掉：
+                // 否则它会经 `BaseInputConnection` → `ViewRootImpl.dispatchKeyFromIme`
+                // 再走一遍编辑器，一次物理按键就变成了挪两格，或者被别的地方二次处理。
+                KeyEvent.ACTION_UP -> return true
             }
             return super.sendKeyEvent(event)
         }
@@ -849,11 +898,7 @@ class CodeEditorView @JvmOverloads constructor(
             if (len == 0) return true
             val cur = cursor ?: return false
             val from = if (step < 0) cur.left().index else cur.right().index
-            val index = (from + step).coerceIn(0, len)
-            if (index == from) return true
-            val pos = content.getIndexer().getCharPosition(index)
-            // 一定要显式指到 CodeEditorView：本类自己也有同名同签名的 setSelection(int, int)
-            this@CodeEditorView.setSelection(pos.line, pos.column)
+            moveCaretToIndex(from + step)
             return true
         }
 
@@ -871,11 +916,51 @@ class CodeEditorView @JvmOverloads constructor(
         override fun setSelection(start: Int, end: Int): Boolean {
             val len = getText().length
             val caret = ImeSelection.caretIndexFor(start, end, len) ?: return super.setSelection(start, end)
-            val pos = getText().getIndexer().getCharPosition(caret)
-            this@CodeEditorView.setSelection(pos.line, pos.column)
+            moveCaretToIndex(caret)
             return true
         }
     }
+
+    /**
+     * 把光标挪到 [index]（字符偏移）——**不走 `setSelection(line, column)`**。
+     *
+     * 官方那条路径每次都会顺带做三件对「挪一个字符」毫无必要的事：
+     *
+     * 1. `ensurePositionVisible()` → `WordwrapLayout.getCharLayoutOffset()`。
+     *    它先二分找到这条 line 的某个 row，再沿 rowTable **线性走到目标列**：
+     *    一行被折成多少段就要走多少步；紧接着还要 `renderer.measureText(...)` 再量一次。
+     *    一条一千字符的行折出几十个 row，还不明显；几十万字符的行折出上万个 row，
+     *    每按一次左右键就从头走一遍 —— 这就是「开了自动换行更卡」的来源。
+     * 2. `renderContext.invalidateRenderNodes()`：整份渲染缓存作废，下一帧把屏上每一行
+     *    重新排版测量一遍。内容一个字都没变，白做工。
+     * 3. 重启光标动画，连带一串 invalidate。
+     *
+     * 这里只做真正必要的两件事：改光标位置、重绘。
+     * 渲染缓存的一致性由 Content 的监听器负责（插入/删除走 `updateForInsertion/Deletion`），
+     * 跟 setSelection 里那次 invalidate 无关，跳过是安全的。
+     */
+    private fun moveCaretToIndex(index: Int) {
+        // 输入法回调里崩一下就是软键盘整个失联，宁可吞掉异常也不要打断这条通道
+        runCatching { moveCaretToIndexInternal(index) }
+    }
+
+    private fun moveCaretToIndexInternal(index: Int) {
+        val content = getText()
+        val len = content.length
+        if (len == 0) return
+        val cur = cursor ?: return
+        val pos = content.getIndexer().getCharPosition(index.coerceIn(0, len))
+        cur.set(pos.line, pos.column)
+        selectionAnchor = cur.right()
+        // 同步选区给输入法，否则它手里的候选/组合位置会错位
+        runCatching { updateSelection() }
+        if (!isWholeLineVisible(pos.line)) ensurePositionVisible(pos.line, pos.column)
+        invalidate()
+    }
+
+    /** 这条 line 是否整条都在屏幕里（判断详见 [ImeSelection.wholeLineVisible]） */
+    private fun isWholeLineVisible(line: Int): Boolean =
+        ImeSelection.wholeLineVisible(line, getFirstVisibleLine(), getLastVisibleLine(), isWordwrap)
 
     // ---------- 双指缩放（Sora 默认不支持，这里补上） ----------
 
@@ -1071,9 +1156,6 @@ class CodeEditorView @JvmOverloads constructor(
         /** 判定「点在滚动条上」的横向容差（dp）；滚动条本身更窄，留点余量好按 */
         const val SCROLL_BAR_TOUCH_DP = 22f
 
-        /** 文档小于这个规模就不做折行检查：小文本断行本来就快，不值得多扫一遍 */
-        const val FOLD_MIN_TOTAL_CHARS = 32 * 1024
-
         /** 粘贴/输入停顿多久后检查一次超长行 */
         const val FOLD_CHECK_DELAY_MS = 300L
 
@@ -1087,5 +1169,18 @@ class CodeEditorView @JvmOverloads constructor(
 
         /** 折完还剩这么长的行，说明是不可折的超长字符串，提示用户该行换行会慢 */
         const val HUGE_LINE_CHARS = 20_000
+
+        /**
+         * 回给输入法的上下文长度上限（字符）。
+         *
+         * 输入法每次回调 `getTextBeforeCursor` / `getTextAfterCursor` / `getSurroundingText`
+         * 都要把对应区间的文本复制成一个 String 送过去。Sora 默认允许 50 万字符一次
+         * （`DirectAccessProps.maxIPCTextLength = 500_000`），而 `getSurroundingText`
+         * 更是完全不受这个上限约束 —— 在几十万字符的文档上，一次回调就是几十万字符的
+         * 跨行拼接，移动一次光标要来回好几趟。这就是「大文本走输入法卡、小文本正常」的主因。
+         *
+         * 输入法真正需要的只是光标附近这点上下文做组词 / 联想，几百字符绰绰有余。
+         */
+        const val IME_CONTEXT_CHARS = 512
     }
 }

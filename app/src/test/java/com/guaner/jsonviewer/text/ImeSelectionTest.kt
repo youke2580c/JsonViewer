@@ -1,7 +1,9 @@
 package com.guaner.jsonviewer.text
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ImeSelectionTest {
@@ -36,5 +38,29 @@ class ImeSelectionTest {
         assertNull(ImeSelection.caretIndexFor(-3, -2, 10))
         assertNull(ImeSelection.caretIndexFor(99, 200, 10))
         assertNull(ImeSelection.caretIndexFor(0, 0, 0))
+    }
+
+    @Test
+    fun `line is fully visible when it is strictly inside the viewport`() {
+        assertTrue(ImeSelection.wholeLineVisible(10, 5, 20, wordwrap = false))
+        assertTrue(ImeSelection.wholeLineVisible(10, 5, 20, wordwrap = true))
+    }
+
+    @Test
+    fun `wrapped edge lines are not treated as fully visible`() {
+        // 软换行时首末两行可能只露出一半，不能假定它们的全部 row 都在屏幕内
+        assertFalse(ImeSelection.wholeLineVisible(5, 5, 20, wordwrap = true))
+        assertFalse(ImeSelection.wholeLineVisible(20, 5, 20, wordwrap = true))
+        // 不换行时一行就是一个 row，边缘也算完整可见
+        assertTrue(ImeSelection.wholeLineVisible(5, 5, 20, wordwrap = false))
+        assertTrue(ImeSelection.wholeLineVisible(20, 5, 20, wordwrap = false))
+    }
+
+    @Test
+    fun `lines outside the viewport are never visible`() {
+        assertFalse(ImeSelection.wholeLineVisible(4, 5, 20, wordwrap = false))
+        assertFalse(ImeSelection.wholeLineVisible(4, 5, 20, wordwrap = true))
+        assertFalse(ImeSelection.wholeLineVisible(21, 5, 20, wordwrap = false))
+        assertFalse(ImeSelection.wholeLineVisible(21, 5, 20, wordwrap = true))
     }
 }
