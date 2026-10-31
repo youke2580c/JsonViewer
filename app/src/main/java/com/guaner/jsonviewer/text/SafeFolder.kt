@@ -71,9 +71,17 @@ object SafeFolder {
     /**
      * 折 [from, to) 这一段（不含换行）。
      *
-     * 一直扫描到「自上一个折点起已攒够 [threshold] 个字符」且存在可折点时，
-     * 就近在最后一个可折点之后断行。折点取结构符，是为了让每一行都落在
-     * 一个完整的「键值对 / 数组元素」边界上，看起来接近格式化后的样子。
+     * 分两步：**先**整段扫出所有打算断行的位置，**再**确认安全才真的写入。
+     *
+     * 为什么不能边扫边写：这段文字是否处在某个字符串内部，只有扫到最后才知道。
+     * 而 receives 到的文本未必是合法 JSON（用户可能正在把一段坏东西改好），
+     * 一旦引号不平衡，状态机就会把「字符串里的逗号」当成结构符，
+     * 在**字符串里面**插入真实换行 —— JSON 的字符串不允许裸换行，内容当场报废，
+     * 表现就是「文本里的 \n 变成了实际换行、再也美化不了」。
+     * 于是凡是扫到最后仍处于字符串内的段落，一律整段原样输出、一个换行都不插。
+     *
+     * 断点优先取结构符，是为了让每一行都落在一个完整的「键值对 / 数组元素」边界上，
+     * 看起来接近格式化后的样子。
      *
      * @param anchor 光标偏移，用于统计插在它前面的换行数（见 [shift]）
      * @param shift  单元素数组，累计「插在 anchor 之前的换行数」
@@ -88,11 +96,12 @@ object SafeFolder {
         anchor: Int,
         shift: IntArray
     ): Int {
+        // ---- 第一遍：找断点，同时盯住「这段最后是不是还在字符串里」 ----
+        val breaks = ArrayList<Int>()   // 每个元素表示：在该下标处的字符之后可以断
         var segStart = from
         var lastBreak = -1      // 可折位置：该下标处的字符之后可以断
         var inString = false
         var escaped = false
-        var inserted = 0
         var i = from
         while (i < to) {
             val ch = text[i]
@@ -112,15 +121,27 @@ object SafeFolder {
             }
             i++
             if (i - segStart >= threshold && lastBreak > segStart) {
-                sb.append(text, segStart, lastBreak + 1)
-                sb.append('\n')
-                if (anchor >= 0 && lastBreak + 1 <= anchor) shift[0]++
+                breaks.add(lastBreak)
                 segStart = lastBreak + 1
                 lastBreak = -1
-                inserted++
             }
         }
+
+        // 拿不准作用域就别动：宁可留着长行慢慢断，也不能把内容改坏
+        if (breaks.isEmpty() || inString || escaped) {
+            sb.append(text, from, to)
+            return 0
+        }
+
+        // ---- 第二遍：确认安全，按断点写入 ----
+        segStart = from
+        for (b in breaks) {
+            sb.append(text, segStart, b + 1)
+            sb.append('\n')
+            if (anchor >= 0 && b + 1 <= anchor) shift[0]++
+            segStart = b + 1
+        }
         sb.append(text, segStart, to)
-        return inserted
+        return breaks.size
     }
 }

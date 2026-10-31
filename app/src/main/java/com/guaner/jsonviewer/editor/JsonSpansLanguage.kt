@@ -91,6 +91,22 @@ class JsonSpansLanguage(
     }
 
     /**
+     * 关闭 / 打开语法着色。
+     *
+     * 内容解析失败时由调用方关掉：这时候满屏都是错的值/键，逐 token 扫描、
+     * 下发几万个 `Span` 都是白做；而「先粘贴一大段有问题的 JSON、再一点点改对」
+     * 恰恰是最需要跟手的场景。
+     *
+     * 关掉后每行只下发一条默认样式，**连分词都不跑**，也不再分配 token 缓存。
+     * 大纲跳转高亮仍然保留（它是用户刚点的反馈，跟着色无关）。
+     */
+    fun setSyntaxHighlighting(enabled: Boolean) {
+        if (manager.highlighting == enabled) return
+        manager.highlighting = enabled
+        manager.applyHighlightingChange()
+    }
+
+    /**
      * 通知「整篇内容被替换」。
      *
      * `CodeEditor.setText()` 会新建 Content 实例，此前的行缓存与样式表必然全部失效；
@@ -136,6 +152,10 @@ class JsonSpansLanguage(
 
         private var receiver: StyleReceiver? = null
 
+        /** 语法着色总开关；关掉时每行只有一条默认样式，不做任何扫描 */
+        @Volatile
+        var highlighting: Boolean = true
+
         /**
          * 编辑器传进来的内容引用。
          *
@@ -163,6 +183,14 @@ class JsonSpansLanguage(
 
         override fun setReceiver(receiver: StyleReceiver?) {
             this.receiver = receiver
+        }
+
+        /** 着色开关变化：关掉时把行缓存整个丢掉——反正也不用它了，省内存 */
+        fun applyHighlightingChange() {
+            lock.withLock {
+                cache = if (highlighting) arrayOfNulls(lineCountOf()) else emptyArray()
+            }
+            fullDispatch()
         }
 
         override fun reset(content: ContentReference, extraArguments: Bundle) {
@@ -273,6 +301,9 @@ class JsonSpansLanguage(
 
         /** 生成某一行要下发的 span 列表（列号严格递增，至少一条） */
         private fun lineSpans(c: Content, line: Int, hl: LineFlash?): List<Span> {
+            if (!highlighting) {
+                return colorlessLineSpans(c, line, hl)
+            }
             val cached = lock.withLock { cache.getOrNull(line) }
             val tokens: ArrayList<Token> = if (cached != null) {
                 cached
@@ -307,6 +338,26 @@ class JsonSpansLanguage(
             // 空行 / 未着色行也要有一条，否则 span 表里这一行会被上一行的样式填满
             if (out.isEmpty()) out.add(SpanFactory.obtain(0, NORMAL_STYLE))
             return out
+        }
+
+        /**
+         * 不着色模式下某一行的 span：整行默认样式，外加可能落在这一行的跳转高亮。
+         *
+         * 每条 span 都必须是**新建**的对象：`MappedSpans` 各行共享同一个 `Span` 实例时，
+         * Sora 的 `adjustOnDelete` 会把它们当同一个对象改列名/样式，整张表瞬间错乱。
+         */
+        private fun colorlessLineSpans(c: Content, line: Int, hl: LineFlash?): List<Span> {
+            val flash = if (hl == null) emptyList() else flashSpans(hl, columnCount(c, line))
+            if (flash.isEmpty()) return listOf(SpanFactory.obtain(0, NORMAL_STYLE))
+            val out = ArrayList<Span>(flash.size)
+            for (s in flash) out.add(SpanFactory.obtain(s.column, s.style))
+            return out
+        }
+
+        private fun columnCount(c: Content, line: Int): Int = try {
+            c.getColumnCount(line)
+        } catch (e: Throwable) {
+            0
         }
 
         /**

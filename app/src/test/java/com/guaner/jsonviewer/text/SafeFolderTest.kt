@@ -150,4 +150,30 @@ class SafeFolderTest {
         val text = """{"a": 1}"""
         assertNull(SafeFolder.foldWithAnchor(text, threshold = 200, anchor = 2))
     }
+
+    // ---------- 作用域拿不准时一律不折 ----------
+    //
+    // 折行的前提是「知道哪些符号在字符串里」。用户粘贴进来的未必是合法 JSON
+    // （很多时候正是先粘一段坏东西、再一点点改对），引号一旦不平衡，
+    // 状态机就会把字符串里的逗号当成结构符，在字符串内部插入真实换行 ——
+    // JSON 字符串不允许裸换行，内容当场报废。这种情况必须整段原样放行。
+
+    @Test
+    fun `unbalanced quote never breaks inside the string`() {
+        // 少一个收尾引号：扫描到行尾仍处在字符串里，整段都不能动
+        val text = "{\"k\":\"" + (1..400).joinToString(",") { "v$it" }
+        assertNull(SafeFolder.fold(text, threshold = 200))
+    }
+
+    @Test
+    fun `bad line does not stop other lines from folding`() {
+        // 一行坏掉只影响它自己：别的合法长行仍要照常折短，否则整个文档都救不回来
+        val good = "{" + (1..300).joinToString(",") { "\"k$it\":$it" } + "}"
+        val bad = "{\"k\":\"" + (1..400).joinToString(",") { "v$it" }
+        val folded = SafeFolder.fold("$good\n$bad", threshold = 200)!!
+        assertSameIgnoringLineBreaks("$good\n$bad", folded)
+        assertTrue("合法那一半必须被折短", folded.split("\n").size > 2)
+        // 坏的那一段必须原封不动
+        assertTrue(folded.replace("\n", "").contains(bad))
+    }
 }

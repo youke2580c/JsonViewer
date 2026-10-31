@@ -4,16 +4,23 @@ import android.content.Context
 import android.graphics.Typeface
 import android.os.Handler
 import android.os.Looper
+import android.text.InputType
 import android.util.AttributeSet
 import android.util.TypedValue
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ViewConfiguration
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputConnectionWrapper
 import android.widget.Toast
 import com.guaner.jsonviewer.editor.JsonEditorTheme
 import com.guaner.jsonviewer.editor.JsonSpansLanguage
 import com.guaner.jsonviewer.data.AppSettings
 import com.guaner.jsonviewer.json.JsonError
 import com.guaner.jsonviewer.json.JsonLimits
+import com.guaner.jsonviewer.json.JsonParser
+import com.guaner.jsonviewer.json.ParseResult
 import com.guaner.jsonviewer.text.SafeFolder
 import com.guaner.jsonviewer.theme.ThemeColors
 import com.guaner.jsonviewer.theme.ThemeManager
@@ -91,9 +98,9 @@ class CodeEditorView @JvmOverloads constructor(
             // 禁联想改用 inputType 上的 NO_SUGGESTIONS 标志，效果一样但不影响光标同步。
             disallowSuggestions = false
         }
-        inputType = android.text.InputType.TYPE_CLASS_TEXT or
-            android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
-            android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        inputType = InputType.TYPE_CLASS_TEXT or
+            InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+            InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
 
         // 不让系统把编辑器内容塞进 View 状态 Bundle：
         // 几百 KB 的文本会在切后台 / 转屏时触发一次巨大的 Parcel 写入（卡顿甚至崩溃）。
@@ -200,7 +207,7 @@ class CodeEditorView @JvmOverloads constructor(
             // 内容里若有一行几十万字符，`setText()` 会按软换行整体断一遍 ——
             // 官方 `breakLine` 是 O(n²)，这一步能卡几十秒。先把它折成短行再灌进去。
             val prepared = if (userWrap && value.length >= FOLD_MIN_TOTAL_CHARS) {
-                SafeFolder.fold(value)?.also { folded = true } ?: value
+                foldSafely(value)?.also { folded = true }?.text ?: value
             } else {
                 value
             }
@@ -285,10 +292,30 @@ class CodeEditorView @JvmOverloads constructor(
 
     // ---------- 错误与搜索高亮 ----------
 
+    /**
+     * 更新「当前内容是否通过 JSON 校验」。
+     *
+     * 这里有两个副作用，都是为了省掉白做的活：
+     * - 解析失败 → 关掉语法着色。错的文本里全是无意义的值/键，逐 token 扫描、
+     *   下发几万个 `Span` 都是白<｜hy_place▁holder▁no▁813｜>，而「粘贴一大段有问题的 JSON、再一点点改对」
+     *   恰好是最需要跟手的时刻。
+     * - 解析失败 → 不再折行。`SafeFolder` 靠引号状态判断「哪些符号在字符串内」，
+     *   文本本身引号不平衡时这个判断会错位，就会在**字符串内部**插入真实换行，
+     *   直接把内容改坏（这也是「\n 变成实际换行、无法美化」的来源）。
+     *   宁可留着长行慢慢断，也不能碰坏内容。
+     */
     fun setError(error: JsonError?) {
         currentError = error
+        val valid = error == null
+        if (valid != jsonValid) {
+            jsonValid = valid
+            language.setSyntaxHighlighting(valid)
+        }
         applyDiagnostics(error)
     }
+
+    /** 内容是否已通过 JSON 校验；尚未解析过时按「通过」处理，避免一进来就把着色关掉 */
+    private var jsonValid = true
 
     /**
      * 搜索命中：高亮由应用自己用诊断区渲染（Sora 自带的搜索模式会接管交互，
@@ -632,6 +659,9 @@ class CodeEditorView @JvmOverloads constructor(
     /** 文档里存在超过折行阈值的行时，就地折一次 */
     private fun foldLongLinesIfNeeded() {
         if (folding || !userWrap) return
+        // 文本不合法时不折：见 setError 的注释，折行依赖引号状态判断，
+        // 对不合法的文本会读错作用域，在字符串内部插真换行、改坏内容。
+        if (!jsonValid) return
         val content = getText()
         val len = content.length
         if (len < FOLD_MIN_TOTAL_CHARS) return
@@ -639,7 +669,7 @@ class CodeEditorView @JvmOverloads constructor(
         // 折行只插换行、不删字符：把光标位置带过去，否则替换完整篇光标会停在原字符左边，
         // 看起来就是「光标位置不对」。滚动位置同理，直接沿用原来的像素偏移即可。
         val cursorIndex = cursor.left().index.coerceIn(0, len)
-        val result = SafeFolder.foldWithAnchor(content, SafeFolder.DEFAULT_THRESHOLD, cursorIndex) ?: return
+        val result = foldSafely(content, cursorIndex) ?: return
         folding = true
         suppressCallback = true
         try {
@@ -661,6 +691,30 @@ class CodeEditorView @JvmOverloads constructor(
         dispatchUndoState()
     }
 
+    /** 文本能否被解析成 JSON；只用于折行前的安全校验，异常一律按「失败」处理 */
+    private fun parsesAsJson(text: String): Boolean = try {
+        JsonParser.parse(text) is ParseResult.Success
+    } catch (t: Throwable) {
+        false
+    }
+
+    /**
+     * 折行，并且**只在折行结果仍然能通过 JSON 校验时才采用**。
+     *
+     * 这是防止内容被改坏的最后一道闸。`SafeFolder` 靠引号状态判断「哪些符号在
+     * 字符串内」，一旦读错作用域（比如文本里有一个没转义的引号），它就会在
+     * **字符串里面**插入真实换行 —— JSON 里字符串不允许有裸换行，内容直接报废，
+     * 表现为「文本里的 \n 变成了实际换行、无法正确美化」。
+     *
+     * 折行按定义不改变 JSON 语义，所以折完过不了校验＝判断错了，放弃这一次。
+     * 长行慢一点可以忍，内容坏了不能忍。
+     */
+    private fun foldSafely(text: CharSequence, anchor: Int = -1): SafeFolder.Result? {
+        if (!userWrap || !jsonValid) return null
+        val result = SafeFolder.foldWithAnchor(text, SafeFolder.DEFAULT_THRESHOLD, anchor) ?: return null
+        return if (parsesAsJson(result.text)) result else null
+    }
+
     private fun hasLineWiderThan(content: io.github.rosemoe.sora.text.Content, limit: Int): Boolean {
         val n = content.lineCount
         for (i in 0 until n) {
@@ -677,6 +731,94 @@ class CodeEditorView @JvmOverloads constructor(
             "检测到超长行，已自动折行以便编辑（内容不变）"
         }
         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    // ---------- 输入法连接 ----------
+    //
+    // 目的只有一个：让**中文输入法左右移动光标**能用。
+    //
+    // 百度、搜狗这类输入法移动光标的方式很不一致：有的发 `InputConnection.setSelection`
+    // （Sora 已经处理），有的直接发 `KeyEvent(KEYCODE_DPAD_LEFT/RIGHT)`。
+    // 后者走 `BaseInputConnection.sendKeyEvent` → `ViewRootImpl.dispatchKeyFromIme`，
+    // 中间环节一多就不一定落到编辑器上，表现就是「按了没反应」。
+    //
+    // 这里在 Sora 的连接外面套一层，把方向键的**按下**直接翻译成编辑器自身的
+    // 光标移动，并如实告诉输入法「已经处理了」。组词期间不插手：那时方向键属于候选区。
+
+    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
+        val ic = super.onCreateInputConnection(outAttrs) ?: return null
+        return ImeCursorConnection(ic)
+    }
+
+    private inner class ImeCursorConnection(target: InputConnection) : InputConnectionWrapper(target, true) {
+
+        /**
+         * 是否正在组词：组词时的左右键属于候选/组合串，不能截走。
+         *
+         * 自己跟踪而不是查 `getComposingText`——那个方法要 Android 13 才有。
+         */
+        private var composing = false
+
+        override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
+            composing = !text.isNullOrEmpty()
+            return super.setComposingText(text, newCursorPosition)
+        }
+
+        override fun finishComposingText(): Boolean {
+            composing = false
+            return super.finishComposingText()
+        }
+
+        private fun isComposing(): Boolean = composing
+
+        override fun sendKeyEvent(event: KeyEvent): Boolean {
+            if (event.action == KeyEvent.ACTION_DOWN && !isComposing()) {
+                val step = when (event.keyCode) {
+                    KeyEvent.KEYCODE_DPAD_LEFT -> -1
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> 1
+                    else -> 0
+                }
+                if (step != 0) return moveCursorBy(step)
+            }
+            return super.sendKeyEvent(event)
+        }
+
+        /** 按字符偏移移动光标（有选区时收敛到选区边界，和常规编辑器一致） */
+        private fun moveCursorBy(step: Int): Boolean {
+            val content = getText()
+            val len = content.length
+            if (len == 0) return true
+            val cur = cursor ?: return false
+            val from = if (step < 0) cur.left().index else cur.right().index
+            val index = (from + step).coerceIn(0, len)
+            if (index == from) return true
+            val pos = content.getIndexer().getCharPosition(index)
+            setSelection(pos.line, pos.column)
+            return true
+        }
+
+        /**
+         * `setSelection` 是另一条输入法常用的移动路径。
+         * Sora 自己实现了它，这里只做兜底：万一它因为别的原因返回 false，也不能丢。
+         */
+        override fun setSelection(start: Int, end: Int): Boolean {
+            if (super.setSelection(start, end)) return true
+            val content = getText()
+            val len = content.length
+            if (len == 0 || isComposing()) return false
+            val a = start.coerceIn(0, len)
+            val b = end.coerceIn(0, len)
+            val lo = minOf(a, b)
+            val hi = maxOf(a, b)
+            val startPos = content.getIndexer().getCharPosition(lo)
+            if (lo == hi) {
+                setSelection(startPos.line, startPos.column)
+            } else {
+                val endPos = content.getIndexer().getCharPosition(hi)
+                setSelectionRegion(startPos.line, startPos.column, endPos.line, endPos.column)
+            }
+            return true
+        }
     }
 
     // ---------- 双指缩放（Sora 默认不支持，这里补上） ----------

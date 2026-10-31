@@ -11,8 +11,8 @@ android {
         applicationId = "com.guaner.jsonviewer"
         minSdk = 24
         targetSdk = 34
-        versionCode = 15
-        versionName = "1.4.9"
+        versionCode = 16
+        versionName = "1.5.0"
     }
 
     signingConfigs {

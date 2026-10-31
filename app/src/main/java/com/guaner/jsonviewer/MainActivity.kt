@@ -1162,6 +1162,8 @@ class MainActivity : AppCompatActivity() {
                 selectedNode = null
                 outlineExpanded.clear()
                 binding.errorBanner.isVisible = false
+                // 文本清空后编辑器要回到「可着色」状态，否则上一轮的错误会一直压着着色开关
+                binding.editorView.setError(null)
                 renderLevel()
                 refreshOutlineIfOpen()
             }
