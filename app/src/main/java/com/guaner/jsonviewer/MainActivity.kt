@@ -1976,7 +1976,7 @@ class MainActivity : AppCompatActivity() {
                     "· 主题配色、字号、底部按钮三态（底栏 / 更多 / 隐藏）\n" +
                     "· 崩溃日志可查看、复制、分享，也可在设置里关闭\n\n" +
                     "开源地址：github.com/zmn001125/JsonViewer\n" +
-                    "许可证：MIT License\n" +
+                    "许可证：GNU GPL v3.0（修改或分发须同样开源）\n" +
                     "解析 Jackson Core · 查询 Jayway JsonPath"
         )
     }

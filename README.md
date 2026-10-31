@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/zmn001125/JsonViewer/releases/latest"><img src="https://img.shields.io/github/v/release/zmn001125/JsonViewer?color=607D8B&label=release" alt="Release"></a>
   <a href="https://github.com/zmn001125/JsonViewer/actions/workflows/android.yml"><img src="https://github.com/zmn001125/JsonViewer/actions/workflows/android.yml/badge.svg" alt="CI"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/Android-7.0%2B-3DDC84.svg" alt="Android 7.0+">
   <img src="https://img.shields.io/badge/Kotlin-1.9-7F52FF.svg" alt="Kotlin">
 </p>
@@ -136,6 +136,7 @@ docs/screenshots/                # README 截图
 
 ## 更新日志
 
+- **1.2** — 许可证由 MIT 变更为 GNU GPL v3.0：修改或分发须同样开源
 - **1.1** — 网络面板支持粘贴「链接,{配置}」自动拆分；新增文本编码（UTF-8 / GBK / GB18030 / 自定义）与 URL 转义三态（自动 / 不转义 / `%` 也转义）
 - **1.0** — 首个开源版本
 
@@ -147,4 +148,19 @@ docs/screenshots/                # README 截图
 
 ## License
 
-[MIT](LICENSE) © 2026 zmn001125
+[GNU General Public License v3.0](LICENSE) © 2026 zmn001125
+
+这是一份**强 copyleft** 协议，用一句话说清：
+
+| 你的用法 | 是否需要开源 |
+| --- | --- |
+| 自己用、内部用，不对外分发 | 不需要，随便改 |
+| 改了之后分发 APK、上架应用商店、随产品交付给客户 | **必须**以同样协议开放修改后的完整源码 |
+| 原样分发（不改） | 需要保留本协议与版权声明，并附带源码获取方式 |
+
+换言之：**可以免费用、免费改、免费商用，但不能拿去做闭源分发。** 分发时需提供对应源码（本仓库地址即可），并保留原作者版权声明。
+
+> **关于历史版本**：v1.0 与 v1.1 曾以 MIT 协议发布，已获得的授权不可撤销，仍按 MIT 处理。GPL-3.0 自 v1.2 起生效。
+
+第三方依赖仍遵循各自协议：Jackson Core（Apache-2.0）、Jayway JsonPath（Apache-2.0）、AndroidX / Material Components（Apache-2.0），均与本协议兼容。
+
