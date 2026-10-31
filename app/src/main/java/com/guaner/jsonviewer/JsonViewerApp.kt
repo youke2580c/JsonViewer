@@ -4,6 +4,7 @@ import android.app.Application
 import com.guaner.jsonviewer.crash.CrashLogger
 import com.guaner.jsonviewer.data.AppSettings
 import com.guaner.jsonviewer.data.JsonHistory
+import com.guaner.jsonviewer.data.StartupGuard
 import com.guaner.jsonviewer.data.UaProfiles
 import com.guaner.jsonviewer.data.UrlHistory
 import com.guaner.jsonviewer.theme.ThemeManager
@@ -26,6 +27,7 @@ class JsonViewerApp : Application() {
         JsonHistory.init(this)
         UrlHistory.init(this)
         UaProfiles.init(this)
+        StartupGuard.init(this)
         CrashLogger.install(this)
         CrashLogger.bindEnabledProvider { AppSettings.crashLogEnabled }
     }

@@ -86,6 +86,9 @@ object CrashLogger {
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             try {
+                // 无论是否落盘都要打「刚崩过」标记：下次启动据此跳过自动恢复，
+                // 避免某份内容一恢复就崩、用户永远进不去软件
+                com.guaner.jsonviewer.data.StartupGuard.markCrash()
                 // 设置里关掉「记录崩溃日志」时只跳过落盘，仍然照常交给系统处理
                 if (enabled()) save(ctx, thread, throwable)
             } catch (_: Throwable) {

@@ -48,6 +48,7 @@ import com.guaner.jsonviewer.json.JsonValueValidator
 import com.guaner.jsonviewer.data.AppSettings
 import com.guaner.jsonviewer.data.JsonHistory
 import com.guaner.jsonviewer.data.SessionStore
+import com.guaner.jsonviewer.data.StartupGuard
 import com.guaner.jsonviewer.data.UaProfiles
 import com.guaner.jsonviewer.data.UrlHistory
 import com.guaner.jsonviewer.json.JsonError
@@ -151,6 +152,7 @@ class MainActivity : AppCompatActivity() {
         switchMode(Mode.FORM)
         applyTheme()
         restoreSession(savedInstanceState)
+        markStartupHealthy()
 
         // 系统返回（导航栏返回键 / 手势返回）：优先关搜索 → 表单子层级回退一层 → 否则默认退出
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -326,26 +328,79 @@ class MainActivity : AppCompatActivity() {
     /**
      * 恢复上次内容。
      * - 外部「打开文件 / 分享」进来（intent 带数据）时不恢复，避免覆盖用户要看的文件；
-     * - 横竖屏等重建时 EditText 自己会恢复文本，也不重复恢复。
+     * - 横竖屏等重建时编辑器由自己恢复文本（不走系统 Bundle），这里也不重复恢复；
+     * - 上次是异常退出、或上次就卡在恢复阶段，本次跳过自动恢复：宁可少恢复一次，
+     *   也不能因为某份内容一加载就崩，让用户再也进不去软件。
      */
     private fun restoreSession(savedInstanceState: Bundle?) {
-        if (savedInstanceState != null) return
-        if (!AppSettings.autoRestoreSession) return
+        if (savedInstanceState != null) {
+            StartupGuard.markHealthy()
+            return
+        }
+        if (!AppSettings.autoRestoreSession) {
+            StartupGuard.markHealthy()
+            return
+        }
         val intent = intent
         val fromOutside = intent != null && (
             intent.action == Intent.ACTION_VIEW ||
                 intent.action == Intent.ACTION_SEND ||
                 intent.action == Intent.ACTION_PROCESS_TEXT
             )
-        if (fromOutside) return
+        if (fromOutside) {
+            StartupGuard.markHealthy()
+            return
+        }
+        // 上一次启动是异常退出（崩溃标记还在）→ 本次不恢复
+        if (!StartupGuard.shouldRestoreSession(this)) {
+            StartupGuard.markHealthy()
+            // 只提示「本来会恢复却跳过了」的情况；首次安装/内容已清空时不该吓人
+            if (AppSettings.autoRestoreSession && StartupGuard.hasRestoredBefore()) {
+                toast("上次异常退出，本次未自动恢复上次内容（内容仍在本地，可在设置里查看）")
+            }
+            return
+        }
+        // 先记「正在恢复」：如果这次进程倒在恢复阶段，下次启动就会自动跳过
+        StartupGuard.markRestoreAttempt()
         lifecycleScope.launch {
-            val text = withContext(Dispatchers.IO) { SessionStore.load(this@MainActivity) }
-            if (text.isNullOrBlank()) return@launch
+            val text = try {
+                withContext(Dispatchers.IO) { SessionStore.load(this@MainActivity) }
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                null
+            }
+            if (text.isNullOrBlank()) {
+                StartupGuard.markHealthy()
+                return@launch
+            }
             // 恢复期间用户已经开始输入/粘贴，则不覆盖
-            if (binding.editorView.text.isNotBlank()) return@launch
+            if (binding.editorView.text.isNotBlank()) {
+                StartupGuard.markHealthy()
+                return@launch
+            }
+            // 超过 200 万字符不读进来：读进来也没法流畅编辑，反而会让整机会话卡死
+            if (text.length > JsonLimits.MAX_INPUT_CHARS) {
+                StartupGuard.markHealthy()
+                toast("上次的内容过大（${JsonLimits.formatChars(text.length)}），已跳过自动恢复")
+                return@launch
+            }
             lastSavedSession = text
-            binding.editorView.setTextProgrammatic(text)
+            // 恢复到表单模式：表单只渲染当前一层，不会对全文做逐行排版，
+            // 超大文本进来也不会在首帧就卡住。文本通过 setTextProgrammatic 放进编辑器，
+            // 切到代码页时立即可见，但不再对整篇文本做一次排版。
+            switchMode(Mode.FORM)
+            renderLevel()
+            // 主界面已经正常呈现：清掉「正在恢复」标记
+            StartupGuard.markHealthy()
+            StartupGuard.markRestoredOnce()
             toast("已恢复上次的内容")
+        }
+    }
+
+    /** 主界面完成首帧：说明启动链路没崩，清掉「正在恢复」标记 */
+    private fun markStartupHealthy() {
+        binding.root.post {
+            if (!isFinishing && !isDestroyed) StartupGuard.markHealthy()
         }
     }
 
