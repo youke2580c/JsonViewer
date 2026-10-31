@@ -99,6 +99,19 @@ object AppSettings {
         get() = prefs.getBoolean("sendReferer", true)
         set(v) = prefs.edit().putBoolean("sendReferer", v).apply()
 
+    /**
+     * 网络面板的显式编码：空串表示自动（发送用 UTF-8，响应按响应头）。
+     * 设定后同时作用于 URL 转义、请求体字节与响应解码。
+     */
+    var textCharset: String
+        get() = prefs.getString("textCharset", "") ?: ""
+        set(v) = prefs.edit().putString("textCharset", v).apply()
+
+    /** URL 转义策略：auto / none / all，见 [com.guaner.jsonviewer.net.UrlEncodeMode] */
+    var urlEncode: String
+        get() = prefs.getString("urlEncode", "auto") ?: "auto"
+        set(v) = prefs.edit().putString("urlEncode", v).apply()
+
     private lateinit var prefs: SharedPreferences
 
     fun init(context: Context) {

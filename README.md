@@ -51,6 +51,8 @@
 ### 网络调试
 
 - GET / POST，请求体原样发送，自定义任意请求头，支持粘贴 JSON 批量填头。
+- **一行拆包**：直接粘贴 `https://…,{"method":"POST","body":"a=1","headers":{…},"charset":"gbk"}` 这种抓包格式，自动拆出链接、方法、请求头、请求体与编码；URL 查询参数里的逗号不会被误拆。
+- **编码与转义**：文本编码可选 自动 / UTF-8 / GBK / GB18030 / 自定义，同时作用于响应解码、请求体字节和 URL 转义；URL 转义可选 自动（只转中文、空格等，保留已有 `%XX`）、不转义、`%` 也转义。
 - **UA 策略**：手机 UA / 电脑 UA / 多条自定义 / 不携带；**Referer** 可关闭自动补全；**Content-Type** 可选自动、JSON、表单、纯文本、自定义或不发送。手填的请求头永远优先。
 - 先看状态码与响应体，再决定是否导入到代码页；成功的请求连同方法、头、正文与策略一起进「链接历史」，点一下还原整次请求。
 
@@ -66,7 +68,7 @@
 
 前往 [**Releases**](https://github.com/zmn001125/JsonViewer/releases/latest) 下载最新 APK：
 
-- `json-viewer-1.0.apk` — 正式版，release 签名，可直接安装（Android 7.0+，约 2.5 MB）
+- `json-viewer-1.1.apk` — 正式版，release 签名，可直接安装（Android 7.0+，约 2.5 MB）
 - 安装时如提示「未知来源」，在系统设置里允许对应应用安装即可
 
 > 从旧版本（`com.jsonviewer`）升级的用户请注意：包名已改为 `com.guaner.jsonviewer`，新旧版本可以共存，但本地历史与设置不会自动迁移。
@@ -131,6 +133,11 @@ docs/screenshots/                # README 截图
 - **明文 HTTP**：网络面板允许 `http://`（`network_security_config.xml` 中放开 `cleartextTrafficPermitted`），方便调试内网与老接口；HTTPS 仍走系统 CA 校验。
 - **混淆**：release 开启 R8 与资源压缩，json-path / Jackson 已配置 keep 规则。
 - **测试**：单元测试覆盖解析器、路径引擎、序列化、限额、设置与主题编解码等纯逻辑模块，不依赖设备与网络。
+
+## 更新日志
+
+- **1.1** — 网络面板支持粘贴「链接,{配置}」自动拆分；新增文本编码（UTF-8 / GBK / GB18030 / 自定义）与 URL 转义三态（自动 / 不转义 / `%` 也转义）
+- **1.0** — 首个开源版本
 
 ## 致谢
 

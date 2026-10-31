@@ -26,7 +26,11 @@ data class HttpRequest(
      * 空串表示**不发送** Content-Type，其余原样发送。
      * 用户在请求头里手动填了 Content-Type 时以用户的为准。
      */
-    val contentType: String? = null
+    val contentType: String? = null,
+    /** 显式编码（utf-8 / gbk…）：同时用于 URL 转义、请求体字节与响应解码；[null] 自动 */
+    val charset: String? = null,
+    /** URL 转义策略 */
+    val urlEncode: UrlEncodeMode = UrlEncodeMode.AUTO
 )
 
 /**
@@ -76,13 +80,14 @@ object HttpEngine {
     fun originOf(url: URL): String = "${url.protocol}://${url.authority}/"
 
     /** 没填 Content-Type 时按正文形态推断，正文本身不做任何改写 */
-    fun guessContentType(body: String): String {
+    fun guessContentType(body: String, charset: java.nio.charset.Charset = Charsets.UTF_8): String {
+        val tail = "; charset=" + charset.name().lowercase()
         val head = body.trimStart()
         if (head.startsWith("{") || head.startsWith("[")) {
-            return "application/json; charset=utf-8"
+            return "application/json$tail"
         }
-        if (looksLikeForm(body)) return "application/x-www-form-urlencoded; charset=utf-8"
-        return "text/plain; charset=utf-8"
+        if (looksLikeForm(body)) return "application/x-www-form-urlencoded$tail"
+        return "text/plain$tail"
     }
 
     /** 形如 `keyword=我的&t=1`：每段都有非空键名 */
@@ -107,10 +112,19 @@ object HttpEngine {
         if (rawUrl.isEmpty()) {
             return fail("请输入链接", started)
         }
+        val explicitCharset = request.charset?.trim()?.takeIf { it.isNotEmpty() }?.let { name ->
+            try {
+                java.nio.charset.Charset.forName(name)
+            } catch (e: Exception) {
+                return fail("不支持的编码：$name", started)
+            }
+        }
+        val sendCharset = explicitCharset ?: Charsets.UTF_8
         val url = try {
-            URL(normalizeUrl(rawUrl))
+            // 先补协议再转义：保留 ? & = 等结构字符，中文按 charset 编成 %XX
+            URL(UrlCodec.encode(normalizeUrl(rawUrl), sendCharset, request.urlEncode))
         } catch (e: Exception) {
-            return fail("链接格式不正确", started)
+            return fail("链接格式不正确，可尝试换一种 URL 转义方式", started)
         }
         if (url.protocol != "http" && url.protocol != "https") {
             return fail("只支持 http / https 链接", started)
@@ -168,14 +182,14 @@ object HttpEngine {
                 if (!hasContentType) {
                     val chosen = request.contentType
                     when {
-                        chosen == null -> conn.setRequestProperty("Content-Type", guessContentType(body))
+                        chosen == null -> conn.setRequestProperty("Content-Type", guessContentType(body, sendCharset))
                         // 明确要求不带：空值同样要写进请求头，否则连接层会给 POST 补
                         // 一个默认的 application/x-www-form-urlencoded
                         chosen.isBlank() -> conn.setRequestProperty("Content-Type", "")
                         else -> conn.setRequestProperty("Content-Type", chosen)
                     }
                 }
-                val bytes = body.toByteArray(Charsets.UTF_8)
+                val bytes = body.toByteArray(sendCharset)
                 conn.doOutput = true
                 conn.setFixedLengthStreamingMode(bytes.size)
                 conn.outputStream.use { it.write(bytes) }
@@ -190,7 +204,7 @@ object HttpEngine {
             val stream: InputStream? = if (code >= 400) conn.errorStream else conn.inputStream
             val raw = stream?.use { readAll(it) } ?: ByteArray(0)
             val decoded = if (isGzip(fields)) unzip(raw) else raw
-            val text = String(decoded, charsetOf(fields))
+            val text = String(decoded, explicitCharset ?: charsetOf(fields))
             return HttpResponse(
                 code = code,
                 message = message,

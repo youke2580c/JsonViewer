@@ -22,7 +22,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="2dp"
-        android:text="请求头按填写原样发送；没填的 UA / Referer / Content-Type 按下面三个开关补齐，也可以选择不携带（请求头里手填的永远优先）"
+        android:text="链接支持粘贴「链接,{配置}」的抓包格式，自动拆出方法 / 请求头 / 请求体 / 编码；没填的 UA / Referer / Content-Type 按下面的 chip 补齐（手填的永远优先）"
         android:textSize="11sp" />
 
     <LinearLayout
@@ -142,6 +142,28 @@
                 android:paddingStart="12dp"
                 android:paddingEnd="12dp"
                 android:text="类型：自动"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/charsetChip"
+                android:layout_width="wrap_content"
+                android:layout_height="30dp"
+                android:layout_marginStart="6dp"
+                android:gravity="center"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:text="编码：自动"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/encodeChip"
+                android:layout_width="wrap_content"
+                android:layout_height="30dp"
+                android:layout_marginStart="6dp"
+                android:gravity="center"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:text="转义：自动"
                 android:textSize="12sp" />
         </LinearLayout>
     </HorizontalScrollView>

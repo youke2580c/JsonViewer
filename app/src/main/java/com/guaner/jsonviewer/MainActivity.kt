@@ -1972,7 +1972,7 @@ class MainActivity : AppCompatActivity() {
                     "· JSONPath 查询、双模式搜索、精确到行列的错误定位\n" +
                     "· 值详情与就地编辑，可切换值类型，大文本用临时编辑器\n" +
                     "· 美化 / 压缩 / Unicode 转义\n" +
-                    "· 网络请求：GET/POST、自定义请求头、UA / Referer / Content-Type 策略\n" +
+                    "· 网络请求：GET/POST、自定义请求头、UA / Referer / Content-Type 策略、粘贴抓包格式自动拆分、编码与 URL 转义\n" +
                     "· 主题配色、字号、底部按钮三态（底栏 / 更多 / 隐藏）\n" +
                     "· 崩溃日志可查看、复制、分享，也可在设置里关闭\n\n" +
                     "开源地址：github.com/zmn001125/JsonViewer\n" +

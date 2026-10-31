@@ -29,7 +29,11 @@ object UrlHistory {
         /** 当时是否自动补 Referer */
         val sendReferer: Boolean = true,
         /** 当时的 Content-Type 选择：auto / 空串（不发送） / 具体值 */
-        val contentType: String = AppSettings.CT_AUTO
+        val contentType: String = AppSettings.CT_AUTO,
+        /** 当时的显式编码；空串 = 自动 */
+        val charset: String = "",
+        /** 当时的 URL 转义策略：auto / none / all */
+        val urlEncode: String = "auto"
     ) {
         /** 历史列表里的一行：`POST https://… · 3 头 · 有 body` */
         fun label(): String = buildString {
@@ -68,6 +72,8 @@ object UrlHistory {
         append(",\"uaName\":").append(JsonSerializer.quote(entry.uaName))
         append(",\"sendReferer\":").append(entry.sendReferer)
         append(",\"contentType\":").append(JsonSerializer.quote(entry.contentType))
+        append(",\"charset\":").append(JsonSerializer.quote(entry.charset))
+        append(",\"urlEncode\":").append(JsonSerializer.quote(entry.urlEncode))
         append(",\"headers\":[")
         entry.headers.forEachIndexed { index, header ->
             if (index > 0) append(',')
@@ -108,7 +114,9 @@ object UrlHistory {
             // 旧记录没有这些键：uaName 留空表示「沿用当前设置」，其余取默认值
             uaName = field("uaName").orEmpty(),
             sendReferer = field("sendReferer") != "false",
-            contentType = field("contentType") ?: AppSettings.CT_AUTO
+            contentType = field("contentType") ?: AppSettings.CT_AUTO,
+            charset = field("charset").orEmpty(),
+            urlEncode = field("urlEncode") ?: "auto"
         )
     }
 }

@@ -19,6 +19,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.widget.doAfterTextChanged
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
@@ -34,6 +35,9 @@ import com.guaner.jsonviewer.net.HttpEngine
 import com.guaner.jsonviewer.net.HttpHeader
 import com.guaner.jsonviewer.net.HttpRequest
 import com.guaner.jsonviewer.net.HttpResponse
+import com.guaner.jsonviewer.net.RequestRecipe
+import com.guaner.jsonviewer.net.RequestRecipeParser
+import com.guaner.jsonviewer.net.UrlEncodeMode
 import com.guaner.jsonviewer.theme.ThemeManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -67,6 +71,13 @@ class NetworkSheet : BottomSheetDialogFragment() {
     private var sendReferer: Boolean = true
     private var contentType: String = AppSettings.CT_AUTO
 
+    /** 显式编码（空串 = 自动）与 URL 转义策略 */
+    private var charset: String = ""
+    private var urlEncode: UrlEncodeMode = UrlEncodeMode.AUTO
+
+    /** 正在把拆分结果写回输入框，期间不再触发拆分 */
+    private var applyingRecipe = false
+
     /** 正在用 JSON 批量重建请求头行，期间忽略输入框变化回调 */
     private var fillingHeaders = false
 
@@ -85,6 +96,8 @@ class NetworkSheet : BottomSheetDialogFragment() {
         super.onViewCreated(view, savedInstanceState)
         sendReferer = AppSettings.sendReferer
         contentType = AppSettings.contentType
+        charset = AppSettings.textCharset
+        urlEncode = UrlEncodeMode.of(AppSettings.urlEncode)
         applyTheme()
         setupChips()
         bindActions()
@@ -93,6 +106,14 @@ class NetworkSheet : BottomSheetDialogFragment() {
         renderMethod()
         renderHeaderDefaults()
         updateImportEnabled()
+
+        // 粘贴「链接,{配置}」时自动拆到各输入框；URL 里的逗号不受影响（见 RequestRecipeParser）
+        binding.urlInput.doAfterTextChanged { text ->
+            if (applyingRecipe) return@doAfterTextChanged
+            val raw = text?.toString().orEmpty()
+            if (!raw.contains(",{")) return@doAfterTextChanged
+            RequestRecipeParser.parse(raw)?.let { applyRecipe(it) }
+        }
     }
 
     // ---------- 主题 ----------
@@ -140,7 +161,8 @@ class NetworkSheet : BottomSheetDialogFragment() {
         binding.responseText.setTextColor(colors.text)
         styleChip(binding.chipGet, method == "GET")
         styleChip(binding.chipPost, method == "POST")
-        listOf(binding.uaChip, binding.refererChip, binding.typeChip).forEach { stylePill(it) }
+        listOf(binding.uaChip, binding.refererChip, binding.typeChip, binding.charsetChip, binding.encodeChip)
+            .forEach { stylePill(it) }
         rows.forEach { styleRow(it) }
     }
 
@@ -198,11 +220,13 @@ class NetworkSheet : BottomSheetDialogFragment() {
         styleChip(binding.chipPost, method == "POST")
     }
 
-    /** 默认头三个 chip 的文案：UA 名称 / Referer 是否自动 / Content-Type 摘要 */
+    /** 默认头 / 编码 chip 的文案：UA 名称 / Referer 是否自动 / Content-Type 摘要 / 编码 / 转义 */
     private fun renderHeaderDefaults() {
         binding.uaChip.text = "UA：${UaProfiles.activeLabel}"
         binding.refererChip.text = if (sendReferer) "Referer：自动" else "Referer：不携带"
         binding.typeChip.text = "类型：${contentTypeLabel()}"
+        binding.charsetChip.text = "编码：${if (charset.isBlank()) "自动" else charset.uppercase()}"
+        binding.encodeChip.text = "转义：${urlEncode.label}"
     }
 
     private fun contentTypeLabel(): String = when (contentType) {
@@ -240,6 +264,104 @@ class NetworkSheet : BottomSheetDialogFragment() {
         binding.uaChip.setOnClickListener { showUaPicker() }
         binding.refererChip.setOnClickListener { showRefererPicker() }
         binding.typeChip.setOnClickListener { showContentTypePicker() }
+        binding.charsetChip.setOnClickListener { showCharsetPicker() }
+        binding.encodeChip.setOnClickListener { showEncodePicker() }
+    }
+
+    // ---------- 编码 / URL 转义 ----------
+
+    private fun showCharsetPicker() {
+        val items = listOf(
+            "自动（发送用 UTF-8，响应按响应头）",
+            "UTF-8",
+            "GBK",
+            "GB18030",
+            "自定义…"
+        )
+        ThemedDialog.options(requireContext(), "文本编码", items) { index ->
+            when (index) {
+                0 -> setCharset("")
+                1 -> setCharset("utf-8")
+                2 -> setCharset("gbk")
+                3 -> setCharset("gb18030")
+                else -> ThemedDialog.input(
+                    requireContext(),
+                    "自定义编码（如 big5、iso-8859-1）",
+                    charset,
+                    onConfirm = { value ->
+                        val name = value.trim()
+                        if (name.isNotEmpty() && !isCharsetSupported(name)) {
+                            toast("不支持的编码：$name")
+                            false
+                        } else {
+                            setCharset(name)
+                            true
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    private fun setCharset(value: String) {
+        charset = value.trim()
+        AppSettings.textCharset = charset
+        renderHeaderDefaults()
+    }
+
+    private fun isCharsetSupported(name: String): Boolean = try {
+        java.nio.charset.Charset.isSupported(name)
+    } catch (e: Exception) {
+        false
+    }
+
+    private fun showEncodePicker() {
+        val items = listOf(
+            "自动（只转义中文/空格等，已有 %XX 保留）",
+            "不转义（原样发送）",
+            "% 也转义（已编码的会变双重编码）"
+        )
+        ThemedDialog.options(requireContext(), "URL 转义", items) { index ->
+            urlEncode = when (index) {
+                1 -> UrlEncodeMode.NONE
+                2 -> UrlEncodeMode.ALL
+                else -> UrlEncodeMode.AUTO
+            }
+            AppSettings.urlEncode = urlEncode.key
+            renderHeaderDefaults()
+        }
+    }
+
+    /** 把「链接,{配置}」的拆分结果填回面板 */
+    private fun applyRecipe(recipe: RequestRecipe) {
+        applyingRecipe = true
+        binding.urlInput.setText(recipe.url)
+        binding.urlInput.setSelection(recipe.url.length)
+        applyingRecipe = false
+
+        recipe.charset?.let { setCharset(it) }
+
+        val hasBody = !recipe.body.isNullOrEmpty()
+        // 有 body 但没写方法时按 POST 处理；明确写 GET 的不带 body
+        val declared = recipe.method
+        if (declared != null) {
+            method = declared
+        } else if (hasBody) {
+            method = "POST"
+        }
+        if (hasBody && method == "POST") binding.bodyInput.setText(recipe.body)
+        renderMethod()
+
+        if (recipe.headers.isNotEmpty()) applyHeaders(recipe.headers)
+        renderHeaderDefaults()
+
+        val parts = ArrayList<String>()
+        parts.add(method)
+        if (recipe.headers.isNotEmpty()) parts.add("${recipe.headers.size} 个头")
+        if (hasBody && method == "POST") parts.add("请求体")
+        if (recipe.charset != null) recipe.charset.let { name -> parts.add(name.uppercase()) }
+        val ignored = if (hasBody && method == "GET") "（GET 已忽略请求体）" else ""
+        toast("已识别请求：" + parts.joinToString(" · ") + ignored)
     }
 
     // ---------- 默认头：UA / Referer / Content-Type ----------
@@ -571,6 +693,9 @@ class NetworkSheet : BottomSheetDialogFragment() {
     }
 
     private fun send() {
+        // 粘贴后立刻点发送（输入监听还没来得及拆）时补一次
+        RequestRecipeParser.parse(binding.urlInput.text?.toString().orEmpty())?.let { applyRecipe(it) }
+
         val url = binding.urlInput.text?.toString()?.trim().orEmpty()
         if (url.isEmpty()) {
             toast("请输入链接")
@@ -584,7 +709,9 @@ class NetworkSheet : BottomSheetDialogFragment() {
             body = body,
             userAgent = UaProfiles.active?.value,
             sendReferer = sendReferer,
-            contentType = contentType.takeIf { it != AppSettings.CT_AUTO }
+            contentType = contentType.takeIf { it != AppSettings.CT_AUTO },
+            charset = charset.takeIf { it.isNotBlank() },
+            urlEncode = urlEncode
         )
 
         binding.sendButton.isEnabled = false
@@ -647,7 +774,9 @@ class NetworkSheet : BottomSheetDialogFragment() {
                 body = if (method == "POST") binding.bodyInput.text?.toString().orEmpty() else "",
                 uaName = UaProfiles.activeName,
                 sendReferer = sendReferer,
-                contentType = contentType
+                contentType = contentType,
+                charset = charset,
+                urlEncode = urlEncode.key
             )
         )
     }
@@ -685,6 +814,8 @@ class NetworkSheet : BottomSheetDialogFragment() {
         if (entry.uaName.isNotBlank()) UaProfiles.select(entry.uaName)
         sendReferer = entry.sendReferer
         contentType = entry.contentType
+        charset = entry.charset
+        urlEncode = UrlEncodeMode.of(entry.urlEncode)
         renderHeaderDefaults()
         val headerCount = entry.headers.count { it.name.isNotBlank() && it.value.isNotBlank() }
         toast("已填入该次请求：${entry.method} · $headerCount 条请求头" +
