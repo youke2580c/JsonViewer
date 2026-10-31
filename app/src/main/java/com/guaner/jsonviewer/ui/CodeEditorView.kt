@@ -64,6 +64,16 @@ class CodeEditorView @JvmOverloads constructor(
 
     /** 内容超出安全上限时回调（用于提示，不截断） */
     var onOversize: ((Int) -> Unit)? = null
+
+    /**
+     * 撤销栈状态变化（可撤销 / 可重做）时回调，用来刷新底栏按钮的可用态。
+     *
+     * 参数依次为 `canUndo`、`canRedo`。用户编辑、程序化换文本、撤销重做本身都会触发，
+     * 但只在值真的变化时才回调，避免每次按键都刷一遍底栏。
+     */
+    var onUndoStateChanged: ((canUndo: Boolean, canRedo: Boolean) -> Unit)? = null
+    private var lastCanUndo = false
+    private var lastCanRedo = false
     private var oversizeWarned = false
 
     /** 程序性设置文本期间不回调 [onTextChanged]，避免「恢复会话」被当成用户编辑 */
@@ -105,6 +115,8 @@ class CodeEditorView @JvmOverloads constructor(
             if (suppressCallback) return@subscribeEvent
             if (event.action == ContentChangeEvent.ACTION_SET_NEW_TEXT) return@subscribeEvent
             onTextChanged?.invoke()
+            // 每次编辑都可能让撤销栈从「空」变「非空」，顺手同步按钮可用态
+            dispatchUndoState()
         }
 
         applyThemeFromManager()
@@ -172,6 +184,8 @@ class CodeEditorView @JvmOverloads constructor(
         // 程序性替换（导入 / 格式化 / 清空 / 恢复）不会走用户编辑的回调，
         // 但调用方依赖它去重新解析、刷新表单与大纲，所以这里主动通知一次。
         onTextChanged?.invoke()
+        // 换了一整篇内容，撤销栈已被重置，按钮可用态要跟着变
+        dispatchUndoState()
     }
 
     /** 置顶：滚到第一行 */
@@ -197,15 +211,38 @@ class CodeEditorView @JvmOverloads constructor(
         requestFocus()
     }
 
-    /** 短暂高亮一段区间（大纲/快捷跳转定位） */
+    /**
+     * 跳转并高亮一段区间（大纲 / 快捷跳转 / 搜索定位）。
+     *
+     * 高亮分两层，都不带波浪线：
+     * - **整行浅色底**：从字段所在行首到行尾，`SEVERITY_TYPO` 在 Sora 里是带背景的细标记
+     * - **字段名实色底**：只覆盖 [start]–[end]（键名或值本身），用 `SEVERITY_NONE`——
+     *   它对应用色方案里的 `STATIC_SPAN_BACKGROUND`，是纯底色、**不画波浪线**
+     *
+     * 早期实现只用一段 `SEVERITY_TYPO` 覆盖字段名，结果就是「一条波浪线，看不清高亮在哪」。
+     */
     fun flashRange(start: Int, end: Int) {
         val content = getText()
         val len = content.length
         if (len == 0) return
         val s = start.coerceIn(0, len - 1)
         val e = end.coerceIn(s + 1, len)
+
+        // 整行范围：把字段所在行完整覆盖，方便一眼看到「跳到哪一行了」
+        val indexer = content.getIndexer()
+        val pos = indexer.getCharPosition(s)
+        val lineStart = indexer.getCharIndex(pos.line, 0)
+        val lineEnd = if (pos.line + 1 < content.lineCount) {
+            indexer.getCharIndex(pos.line + 1, 0) - 1
+        } else {
+            len
+        }
+
+        flashLineStart = lineStart.coerceIn(0, len)
+        flashLineEnd = lineEnd.coerceIn(flashLineStart, len)
         flashStart = s
         flashEnd = e
+
         applyDiagnostics(currentError)
         jumpTo(s, takeFocus = false)
         handler.removeCallbacks(clearFlashRunnable)
@@ -214,9 +251,13 @@ class CodeEditorView @JvmOverloads constructor(
 
     private var flashStart = -1
     private var flashEnd = -1
+    private var flashLineStart = -1
+    private var flashLineEnd = -1
     private val clearFlashRunnable = Runnable {
         flashStart = -1
         flashEnd = -1
+        flashLineStart = -1
+        flashLineEnd = -1
         applyDiagnostics(currentError)
     }
 
@@ -239,6 +280,62 @@ class CodeEditorView @JvmOverloads constructor(
 
     private var searchMatches: List<IntRange> = emptyList()
     private var searchCurrent: Int = -1
+
+    // ---------- 撤销 / 重做 ----------
+
+    /**
+     * 撤销一步。
+     *
+     * 基类 [CodeEditor.undo] 已经做了文本恢复 + 选区恢复 + 重绘，这里只补两件事：
+     * 1. 尊重设置里的「允许撤销」（关掉时按钮不该生效）
+     * 2. 通知外部重新解析表单/大纲，并刷新按钮可用态
+     *
+     * @return false 表示没有可撤销的内容（或撤销被关闭）
+     */
+    fun undoStep(): Boolean {
+        if (!AppSettings.editorUndo) return false
+        if (!runCatching { canUndo() }.getOrDefault(false)) return false
+        val ok = runCatching { undo(); true }.getOrDefault(false)
+        if (ok) notifyAfterUndoRedo()
+        return ok
+    }
+
+    /** 重做一步；[undoStep] 的反向操作 */
+    fun redoStep(): Boolean {
+        if (!AppSettings.editorUndo) return false
+        if (!runCatching { canRedo() }.getOrDefault(false)) return false
+        val ok = runCatching { redo(); true }.getOrDefault(false)
+        if (ok) notifyAfterUndoRedo()
+        return ok
+    }
+
+    /** 当前是否还能撤销（设置关掉时恒为 false，按钮跟着置灰） */
+    fun canUndoStep(): Boolean =
+        AppSettings.editorUndo && runCatching { canUndo() }.getOrDefault(false)
+
+    /** 当前是否还能重做 */
+    fun canRedoStep(): Boolean =
+        AppSettings.editorUndo && runCatching { canRedo() }.getOrDefault(false)
+
+    /** 撤销/重做后：把光标滚到可视区，并补齐业务回调 */
+    private fun notifyAfterUndoRedo() {
+        runCatching {
+            val cursor = getCursor()
+            jumpTo(cursor.left, takeFocus = false)
+        }
+        onTextChanged?.invoke()
+        dispatchUndoState()
+    }
+
+    /** 把当前撤销栈状态同步给外部（值没变就不回调，避免每次按键刷底栏） */
+    fun dispatchUndoState() {
+        val u = canUndoStep()
+        val r = canRedoStep()
+        if (u == lastCanUndo && r == lastCanRedo) return
+        lastCanUndo = u
+        lastCanRedo = r
+        onUndoStateChanged?.invoke(u, r)
+    }
 
     // ---------- Sora 原生搜索（正则 / 替换） ----------
 
@@ -375,12 +472,22 @@ class CodeEditorView @JvmOverloads constructor(
                     }
                 }
             }
+            // 跳转高亮：整行浅底（TYPO）+ 字段名实色底（NONE，不带波浪线）
+            if (flashLineStart >= 0 && flashLineEnd > flashLineStart) {
+                container.addDiagnostic(
+                    DiagnosticRegion(
+                        flashLineStart.coerceIn(0, len),
+                        flashLineEnd.coerceIn(0, len),
+                        DiagnosticRegion.SEVERITY_TYPO
+                    )
+                )
+            }
             if (flashStart >= 0 && flashEnd > flashStart) {
                 container.addDiagnostic(
                     DiagnosticRegion(
                         flashStart.coerceIn(0, len),
                         flashEnd.coerceIn(0, len),
-                        DiagnosticRegion.SEVERITY_TYPO
+                        DiagnosticRegion.SEVERITY_NONE
                     )
                 )
             }

@@ -28,12 +28,13 @@ object AppSettings {
      * 否则用户把按钮全隐藏后就再也进不去设置了。
      */
     val CONFIG_KEYS = listOf(
-        "outline", "search", "jsonpath", "paste", "top", "bottom", "save", "share",
-        "beautify", "minify", "escape", "import", "history", "network", "clear"
+        "outline", "search", "jsonpath", "paste", "top", "bottom", "undo", "redo",
+        "save", "share", "beautify", "minify", "escape", "import", "history", "network", "clear"
     )
 
     const val DEFAULT_ORDER =
-        "outline,search,jsonpath,paste,top,bottom,save,share,beautify,minify,escape,import,history,network,clear"
+        "outline,search,jsonpath,paste,top,bottom,undo,redo," +
+            "save,share,beautify,minify,escape,import,history,network,clear"
 
     /** 默认隐藏的动作：这些先放在「更多」菜单里，用户想用再打开 */
     const val DEFAULT_HIDDEN = "beautify,minify,escape,import,clear"

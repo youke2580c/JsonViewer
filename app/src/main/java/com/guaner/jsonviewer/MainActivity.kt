@@ -67,6 +67,7 @@ import com.guaner.jsonviewer.ui.ThemedDialog
 import com.guaner.jsonviewer.ui.JsonPathSheet
 import com.guaner.jsonviewer.ui.NetworkSheet
 import com.guaner.jsonviewer.ui.OutlineAdapter
+import com.guaner.jsonviewer.ui.SearchOptionsBar
 import com.guaner.jsonviewer.ui.ThemeSettingsActivity
 import com.guaner.jsonviewer.ui.TreeAdapter
 import com.guaner.jsonviewer.ui.ValueSheet
@@ -529,7 +530,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         // 代码搜索栏第二/三行（Aa / .* / 替换）的颜色由 styleSearchToggles 统一处理
-        if (row === binding.searchRowCode) styleSearchToggles()
+        if (row === binding.searchRowCode) searchBar?.onThemeChanged(colors)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -578,6 +579,12 @@ class MainActivity : AppCompatActivity() {
         binding.editorView.onAutoWrap = {
             toast("检测到超长行，已自动换行以保证滚动流畅")
         }
+        // 撤销栈变化 → 底栏「撤销 / 重做」的可用态跟着变（不可用时压暗）
+        binding.editorView.onUndoStateChanged = { canUndo, canRedo ->
+            refreshUndoButtons(canUndo, canRedo)
+        }
+        // 初始状态：刚启动时撤销栈是空的，两个按钮应显示为不可用
+        refreshUndoButtons(false, false)
     }
 
     private fun setupTree() {
@@ -1012,12 +1019,7 @@ class MainActivity : AppCompatActivity() {
         binding.searchNextCode.setOnClickListener { codeSearchNext() }
         binding.searchPrevCode.setOnClickListener { codeSearchPrev() }
         binding.searchCloseCode.setOnClickListener { closeCodeSearch() }
-        setupSearchToggles()
-        // 替换输入框回车 = 替换当前命中
-        binding.searchReplaceInput.setOnEditorActionListener { _, _, _ ->
-            doReplaceCurrent()
-            true
-        }
+        applySearchOptions()
 
         binding.searchInputForm.addTextChangedListener(afterTextChanged = { runTreeSearch() })
         binding.searchInputForm.setOnEditorActionListener { _, _, _ ->
@@ -1032,9 +1034,7 @@ class MainActivity : AppCompatActivity() {
         // 输入法保持弹出，可以连续输入
         listOf(
             binding.searchPrevCode, binding.searchNextCode, binding.searchCloseCode,
-            binding.searchPrevForm, binding.searchNextForm, binding.searchCloseForm,
-            binding.searchCaseToggle, binding.searchRegexToggle, binding.searchReplaceToggle,
-            binding.searchReplaceOne, binding.searchReplaceAll
+            binding.searchPrevForm, binding.searchNextForm, binding.searchCloseForm
         ).forEach {
             it.isFocusable = false
             it.isFocusableInTouchMode = false
@@ -1051,6 +1051,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun switchMode(m: Mode) {
         mode = m
+        // 撤销/重做只在代码模式生效，切模式后刷新一次按钮观感
+        refreshUndoButtons(
+            binding.editorView.canUndoStep(),
+            binding.editorView.canRedoStep()
+        )
         CrashLogger.noteScreen(if (m == Mode.CODE) "主界面·代码" else "主界面·表单")
         binding.codePanel.isVisible = m == Mode.CODE
         binding.formPanel.isVisible = m == Mode.FORM
@@ -1499,6 +1504,9 @@ class MainActivity : AppCompatActivity() {
     /** 是否走 Sora 原生搜索（关掉后退回旧的纯文本扫描） */
     private var useSoraSearch = true
 
+    /** Aa / .* / 替换 三个开关的控制器（懒创建，绑定 activity_main 里的 include 布局） */
+    private var searchBar: SearchOptionsBar? = null
+
     /** 搜索输入防抖：连续打字只跑最后一次，避免每敲一个字就全量扫描 + 视图跳动 */
     private fun scheduleCodeSearch() {
         codeSearchJob?.cancel()
@@ -1526,8 +1534,9 @@ class MainActivity : AppCompatActivity() {
 
     /** Sora 原生搜索：支持正则，高亮与「当前命中」由编辑器自己维护 */
     private fun runSoraSearch(q: String) {
-        val regex = binding.searchRegexToggle.isSelected
-        val caseSensitive = binding.searchCaseToggle.isSelected
+        val bar = searchOptionsBar()
+        val regex = bar.isRegex
+        val caseSensitive = bar.isCaseSensitive
         val ok = binding.editorView.searchWithSora(q, regex, caseSensitive) { count ->
             if (isFinishing || isDestroyed) return@searchWithSora
             if (count <= 0) {
@@ -1597,85 +1606,46 @@ class MainActivity : AppCompatActivity() {
 
     private fun closeCodeSearch() {
         binding.searchInputCode.setText("")
-        binding.searchReplaceInput.setText("")
+        searchBar?.clearReplaceInput()
         binding.searchRowCode.isVisible = false
         binding.editorView.stopSearch()
     }
 
     // ---------- 搜索选项（Aa / .* / 替换） ----------
 
-    /** 按设置决定显示哪些搜索能力，并恢复上次的选项状态 */
+    private fun searchOptionsBar(): SearchOptionsBar {
+        val existing = searchBar
+        if (existing != null) return existing
+        val v = com.guaner.jsonviewer.databinding.ViewSearchOptionsBinding.bind(binding.searchRowCode)
+        val bar = SearchOptionsBar(
+            this,
+            SearchOptionsBar.Views(
+                optionsRow = v.searchOptionsRow,
+                caseToggle = v.searchCaseToggle,
+                regexToggle = v.searchRegexToggle,
+                replaceToggle = v.searchReplaceToggle,
+                replaceRow = v.searchReplaceRow,
+                replaceInput = v.searchReplaceInput,
+                replaceOne = v.searchReplaceOne,
+                replaceAll = v.searchReplaceAll
+            ),
+            onQueryChanged = { scheduleCodeSearch() },
+            onReplaceOne = { doReplaceCurrent() },
+            onReplaceAll = { doReplaceAll() }
+        )
+        searchBar = bar
+        return bar
+    }
+
+    /** 替换框里的文本（组件刚创建时也能拿到空串） */
+    private fun replaceInputText(): String = binding.searchRowCode
+        .findViewById<android.widget.EditText>(R.id.searchReplaceInput)
+        ?.text?.toString().orEmpty()
+
+    /** 按设置决定显示哪些搜索能力 */
     private fun applySearchOptions() {
-        val enabled = AppSettings.editorSearch
-        useSoraSearch = enabled
-        with(binding) {
-            searchOptionsRow.isVisible = enabled &&
-                (AppSettings.editorSearchCase || AppSettings.editorSearchRegex || AppSettings.editorSearchReplace)
-            searchCaseToggle.isVisible = enabled && AppSettings.editorSearchCase
-            searchRegexToggle.isVisible = enabled && AppSettings.editorSearchRegex
-            searchReplaceToggle.isVisible = enabled && AppSettings.editorSearchReplace
-
-            // 恢复上次的勾选状态
-            searchCaseToggle.isSelected = AppSettings.editorSearchCaseLast
-            searchRegexToggle.isSelected = AppSettings.editorSearchRegexLast
-            if (!searchReplaceToggle.isVisible) {
-                searchReplaceRow.isVisible = false
-                searchReplaceToggle.isSelected = false
-            }
-            styleSearchToggles()
-        }
-    }
-
-    /** Aa / .* / 替换三个按钮的选中态配色：选中用强调色 + 淡底，未选中用次要文字色 */
-    private fun styleSearchToggles() {
-        val colors = ThemeManager.activeColors
-        val accent = colors.accent
-        val idle = colors.gutterText
-        val density = resources.displayMetrics.density
-        listOf(binding.searchCaseToggle, binding.searchRegexToggle, binding.searchReplaceToggle)
-            .forEach { tv ->
-                val on = tv.isSelected
-                tv.setTextColor(if (on) accent else idle)
-                tv.background = android.graphics.drawable.GradientDrawable().apply {
-                    cornerRadius = 6 * density
-                    setColor(if (on) ThemeManager.mix(colors.gutter, accent, 0.18f) else android.graphics.Color.TRANSPARENT)
-                }
-            }
-        listOf(binding.searchReplaceOne, binding.searchReplaceAll).forEach {
-            it.setTextColor(accent)
-        }
-        binding.searchReplaceInput.setTextColor(colors.text)
-        binding.searchReplaceInput.setHintTextColor(colors.gutterText)
-    }
-
-    private fun setupSearchToggles() {
-        applySearchOptions()
-        binding.searchCaseToggle.setOnClickListener {
-            val v = !it.isSelected
-            it.isSelected = v
-            AppSettings.editorSearchCaseLast = v
-            styleSearchToggles()
-            scheduleCodeSearch()
-        }
-        binding.searchRegexToggle.setOnClickListener {
-            val v = !it.isSelected
-            it.isSelected = v
-            AppSettings.editorSearchRegexLast = v
-            styleSearchToggles()
-            scheduleCodeSearch()
-        }
-        binding.searchReplaceToggle.setOnClickListener {
-            val v = !it.isSelected
-            it.isSelected = v
-            binding.searchReplaceRow.isVisible = v
-            styleSearchToggles()
-            if (v) {
-                binding.searchReplaceInput.requestFocus()
-                showKeyboard(binding.searchReplaceInput)
-            }
-        }
-        binding.searchReplaceOne.setOnClickListener { doReplaceCurrent() }
-        binding.searchReplaceAll.setOnClickListener { doReplaceAll() }
+        useSoraSearch = AppSettings.editorSearch
+        searchOptionsBar().applyVisibility()
     }
 
     /** 替换当前命中；替换后内容变了要重新解析并重新搜索 */
@@ -1690,7 +1660,7 @@ class MainActivity : AppCompatActivity() {
             toast("没有可替换的匹配")
             return
         }
-        val replacement = binding.searchReplaceInput.text?.toString().orEmpty()
+        val replacement = replaceInputText()
         binding.editorView.replaceCurrent(replacement)
         // 替换后匹配位置全部偏移，等编辑器处理完再重跑一次
         lifecycleScope.launch {
@@ -1711,7 +1681,7 @@ class MainActivity : AppCompatActivity() {
             toast("没有可替换的匹配")
             return
         }
-        val replacement = binding.searchReplaceInput.text?.toString().orEmpty()
+        val replacement = replaceInputText()
         binding.editorView.replaceAllMatches(replacement) { n ->
             if (isFinishing || isDestroyed) return@replaceAllMatches
             toast("已替换 ${if (n > 0) n else total} 处")
@@ -1899,6 +1869,8 @@ class MainActivity : AppCompatActivity() {
             "paste" -> pasteFromClipboard()
             "top" -> scrollToEdge(top = true)
             "bottom" -> scrollToEdge(top = false)
+            "undo" -> doUndo()
+            "redo" -> doRedo()
             "save" -> saveToFile()
             "share" -> shareFile()
             "beautify" -> transformJson("美化") { JsonSerializer.pretty(it) }
@@ -1909,6 +1881,52 @@ class MainActivity : AppCompatActivity() {
             "network" -> openNetworkSheet()
             "clear" -> confirmClear()
         }
+    }
+
+    /** 底栏「撤销」：只在代码模式有意义（表单模式改字段不走编辑器撤销栈） */
+    private fun doUndo() {
+        if (mode != Mode.CODE) {
+            toast("撤销只在代码编辑页面可用")
+            return
+        }
+        if (!AppSettings.editorUndo) {
+            toast("「允许撤销」已在设置里关闭")
+            return
+        }
+        if (!binding.editorView.undoStep()) {
+            toast("没有可撤销的操作了")
+        }
+    }
+
+    /** 底栏「重做」 */
+    private fun doRedo() {
+        if (mode != Mode.CODE) {
+            toast("重做只在代码编辑页面可用")
+            return
+        }
+        if (!AppSettings.editorUndo) {
+            toast("「允许撤销」已在设置里关闭")
+            return
+        }
+        if (!binding.editorView.redoStep()) {
+            toast("没有可重做的操作了")
+        }
+    }
+
+    /**
+     * 刷新撤销/重做两个底栏按钮的可用态：不可用时压暗到 38%，
+     * 复用了主色 tint 的 `ColorStateList` 思路——直接改 alpha 最省事，也不会破坏主题色。
+     */
+    private fun refreshUndoButtons(canUndo: Boolean, canRedo: Boolean) {
+        applyBottomButtonEnabled("undo", canUndo)
+        applyBottomButtonEnabled("redo", canRedo)
+    }
+
+    private fun applyBottomButtonEnabled(key: String, enabled: Boolean) {
+        val btn = bottomButtons[key] ?: return
+        // 表单模式下这两个按钮本来就不生效，统一按禁用态处理
+        val usable = enabled && mode == Mode.CODE
+        btn.alpha = if (usable) 1f else 0.38f
     }
 
     // ---------- 导入历史 ----------

@@ -23,6 +23,10 @@ object JsonEditorTheme {
         val overlay = translucent(colors.text, if (isDark(colors.background)) 0.12f else 0.07f)
         val overlayStrong = translucent(colors.accent, 0.22f)
 
+        // 跳转高亮的两层：整行用很淡的强调色，字段名用更明显但仍可读的强调色
+        val jumpLine = translucent(colors.accent, if (isDark(colors.background)) 0.10f else 0.07f)
+        val jumpWord = translucent(colors.accent, if (isDark(colors.background)) 0.34f else 0.26f)
+
         with(scheme) {
             // ---------- 基础 ----------
             setColor(EditorColorScheme.WHOLE_BACKGROUND, colors.background)
@@ -66,7 +70,8 @@ object JsonEditorTheme {
             // ---------- 诊断（错误 / 警告 / 拼写） ----------
             setColor(EditorColorScheme.PROBLEM_ERROR, colors.jsonBoolean)
             setColor(EditorColorScheme.PROBLEM_WARNING, colors.jsonNumber)
-            setColor(EditorColorScheme.PROBLEM_TYPO, colors.gutterText)
+            // PROBLEM_TYPO 同时用于「跳转整行浅底」，所以用淡强调色而不是灰文字色
+            setColor(EditorColorScheme.PROBLEM_TYPO, jumpLine)
 
             // ---------- 自动补全与文本操作弹窗（默认白底，深色主题下会刺眼） ----------
             setColor(EditorColorScheme.COMPLETION_WND_BACKGROUND, colors.surface)
@@ -77,10 +82,12 @@ object JsonEditorTheme {
             setColor(EditorColorScheme.TEXT_ACTION_WINDOW_BACKGROUND, colors.surface)
             setColor(EditorColorScheme.TEXT_ACTION_WINDOW_ICON_COLOR, colors.accent)
 
-            // ---------- 静态 span / 粘性分隔线 ----------
-            setColor(EditorColorScheme.STATIC_SPAN_BACKGROUND, overlayStrong)
+            // ---------- 静态 span（大纲跳转的字段名底色）/ 粘性分隔线 ----------
+            // SEVERITY_NONE 的跳转高亮走的就是这两槽：纯底色、不画波浪线
+            setColor(EditorColorScheme.STATIC_SPAN_BACKGROUND, jumpWord)
             setColor(EditorColorScheme.STATIC_SPAN_FOREGROUND, colors.text)
             setColor(EditorColorScheme.STICKY_SCROLL_DIVIDER, colors.gutter)
+
         }
         return scheme
     }

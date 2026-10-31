@@ -25,6 +25,7 @@ import com.google.android.material.tabs.TabLayout
 import com.guaner.jsonviewer.R
 import com.guaner.jsonviewer.crash.CrashLogger
 import com.guaner.jsonviewer.data.AppSettings
+import com.guaner.jsonviewer.editor.JsonEditorTheme
 import com.guaner.jsonviewer.data.JsonHistory
 import com.guaner.jsonviewer.data.SessionStore
 import com.guaner.jsonviewer.data.UrlHistory
@@ -1174,8 +1175,44 @@ class ThemeSettingsActivity : AppCompatActivity() {
             it.thumbTintList = accent
         }
 
-        // 开关 tint 用强调色
-        val trackTint = ColorStateList.valueOf(ThemeManager.mix(colors.accent, colors.surface, 0.4f))
+        // 开关 tint：**四种状态分别给色**，关闭态必须明显比开启态暗。
+        // 之前只给了一个固定色，Material 会用它去派生出「关闭」态，结果关闭的轨道仍是
+        // 高亮灰（明度接近开启的强调色），一眼分不出开还是关。
+        val dark = JsonEditorTheme.isDark(colors.surface)
+        // 开启：强调色轨道 + 白/黑 thumb（保证任何主题下都醒目）
+        val trackOn = colors.accent
+        val thumbOn = if (JsonEditorTheme.isDark(colors.accent)) 0xFFFFFFFF.toInt() else 0xFF101010.toInt()
+        // 关闭：轨道只比卡片底色亮一点点，thumb 用中灰——整体明度明显低于开启
+        val trackOff = if (dark) {
+            ThemeManager.mix(colors.surface, 0xFFFFFFFF.toInt(), 0.14f)
+        } else {
+            ThemeManager.mix(colors.surface, 0xFFFFFFFF.toInt(), 0.0f).let {
+                ThemeManager.mix(it, 0xFF000000.toInt(), 0.20f)
+            }
+        }
+        val thumbOff = ThemeManager.mix(trackOff, colors.text, 0.45f)
+        // 禁用态再压一档，避免「关着的开关」和「不可用的开关」混淆
+        val trackDisabled = ThemeManager.mix(colors.surface, colors.gutterText, 0.16f)
+        val thumbDisabled = ThemeManager.mix(trackDisabled, colors.text, 0.28f)
+
+        val thumbStates = ColorStateList(
+            arrayOf(
+                intArrayOf(android.R.attr.state_enabled, android.R.attr.state_checked),
+                intArrayOf(android.R.attr.state_enabled),
+                intArrayOf(-android.R.attr.state_enabled, android.R.attr.state_checked),
+                intArrayOf()
+            ),
+            intArrayOf(thumbOn, thumbOff, colors.accent, thumbDisabled)
+        )
+        val trackStates = ColorStateList(
+            arrayOf(
+                intArrayOf(android.R.attr.state_enabled, android.R.attr.state_checked),
+                intArrayOf(android.R.attr.state_enabled),
+                intArrayOf(-android.R.attr.state_enabled, android.R.attr.state_checked),
+                intArrayOf()
+            ),
+            intArrayOf(trackOn, trackOff, ThemeManager.mix(trackOn, trackOff, 0.55f), trackDisabled)
+        )
         listOf(
             binding.bgAutoContrast, binding.accentFollow,
             binding.wrapSwitch, binding.zoomSwitch,
@@ -1191,8 +1228,8 @@ class ThemeSettingsActivity : AppCompatActivity() {
             binding.editorSearchSwitch, binding.editorSearchCaseSwitch,
             binding.editorSearchRegexSwitch, binding.editorSearchReplaceSwitch,
         ).forEach {
-            it.thumbTintList = accent
-            it.trackTintList = trackTint
+            it.thumbTintList = thumbStates
+            it.trackTintList = trackStates
         }
 
         // 编辑器行为卡片的副标题统一压暗（无 id，按 textSize=11sp 识别）
@@ -1215,8 +1252,9 @@ class ThemeSettingsActivity : AppCompatActivity() {
             binding.editorSearchRegexSwitch,
             binding.editorSearchReplaceSwitch
         ).forEach {
+            // 只用 isEnabled：颜色由 trackStates / thumbStates 的 disabled 分支决定，
+            // 再叠 alpha 会让「不可用」比「关闭」还淡，容易和关闭态混淆
             it.isEnabled = on
-            it.alpha = if (on) 1f else 0.45f
         }
     }
 

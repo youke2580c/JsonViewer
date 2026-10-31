@@ -39,6 +39,14 @@ object BottomActionCatalog {
             "bottom", "置底", "置底",
             "跳到当前页面最底部", R.drawable.ic_vertical_bottom
         ),
+        BottomAction(
+            "undo", "撤销", "撤销",
+            "退回上一步编辑；连续按可一直往前退", R.drawable.ic_undo
+        ),
+        BottomAction(
+            "redo", "重做", "重做",
+            "撤销之后又后悔了，用它把改动重新做回来", R.drawable.ic_redo
+        ),
         BottomAction("save", "保存", "保存文件", "另存为 JSON 文件，可自选目录", R.drawable.ic_save),
         BottomAction("share", "分享", "分享", "把 JSON 作为文件分享给其他应用", R.drawable.ic_share),
         BottomAction("beautify", "美化", "美化格式", "按缩进重新排版，便于阅读", R.drawable.ic_format),

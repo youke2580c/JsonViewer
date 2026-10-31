@@ -15,10 +15,11 @@ class AppSettingsOrderTest {
     fun customOrderIsKept() {
         assertEquals(
             // 缺失项（save/share）按默认顺序补在末尾，保证每个按钮都有位置
+            // 输入里没有 undo/redo/save/share 等，按默认顺序补在末尾
             listOf(
                 "clear", "import", "escape", "minify", "beautify", "bottom",
-                "top", "paste", "jsonpath", "search", "outline", "save", "share",
-                "history", "network"
+                "top", "paste", "jsonpath", "search", "outline",
+                "undo", "redo", "save", "share", "history", "network"
             ),
             AppSettings.normalize(
                 "clear,import,escape,minify,beautify,bottom,top,paste,jsonpath,search,outline",
@@ -83,11 +84,15 @@ class AppSettingsOrderTest {
 
     @Test
     fun resetToDefaultRestoresAllButtons() {
-        // 重置后：全部项都有位置，默认隐藏 5 项，底部栏显示 10 项（另加固定的「更多」）
+        // 重置后：全部项都有位置，默认隐藏 5 项，其余全部显示在底部栏（另加固定的「更多」）。
+        // 这里不写死数字：以后再加按钮不用回来改期望值
         val order = AppSettings.normalize(AppSettings.DEFAULT_ORDER, AppSettings.CONFIG_KEYS)
         val hidden = AppSettings.filterValid(AppSettings.DEFAULT_HIDDEN, AppSettings.CONFIG_KEYS).toSet()
         assertEquals(AppSettings.CONFIG_KEYS.size, order.size)
-        assertEquals(10, order.count { it !in hidden })
+        assertEquals(AppSettings.CONFIG_KEYS.size - hidden.size, order.count { it !in hidden })
+        // 撤销 / 重做默认就在底栏上（这两个是最常用的编辑动作）
+        assertTrue("undo" !in hidden)
+        assertTrue("redo" !in hidden)
     }
 
     /**

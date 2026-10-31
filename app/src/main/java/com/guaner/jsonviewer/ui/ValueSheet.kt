@@ -31,6 +31,7 @@ import com.guaner.jsonviewer.databinding.SheetValueBinding
 import com.guaner.jsonviewer.json.JsonLimits
 import com.guaner.jsonviewer.json.NodeType
 import com.guaner.jsonviewer.json.ValueDraft
+import com.guaner.jsonviewer.text.TextReplacer
 import com.guaner.jsonviewer.theme.ThemeManager
 
 /**
@@ -145,7 +146,7 @@ class ValueSheet : BottomSheetDialogFragment() {
         binding.valueFull.setTextColor(colors.text)
 
         // 搜索行背景 / 图标 tint / 按钮跟随主题
-        binding.searchRowValue.setBackgroundColor(colors.gutter)
+        binding.searchPanelValue.setBackgroundColor(colors.gutter)
         val accentTint = ColorStateList.valueOf(colors.accent)
         binding.searchPrevValue.imageTintList = accentTint
         binding.searchNextValue.imageTintList = accentTint
@@ -210,6 +211,8 @@ class ValueSheet : BottomSheetDialogFragment() {
         binding.searchPrevValue.setOnClickListener { valueSearchPrev() }
         binding.searchNextValue.setOnClickListener { valueSearchNext() }
         binding.searchCloseValue.setOnClickListener { closeValueSearch() }
+        // Aa / .* / 替换（与代码页共用同一套组件），先于 setupEditing 创建
+        searchBar()
 
         setupEditing()
     }
@@ -349,7 +352,7 @@ class ValueSheet : BottomSheetDialogFragment() {
         binding.valueFull.visibility = View.GONE
         binding.valueScroll.visibility = View.GONE
         binding.scrollThumb.visibility = View.GONE
-        binding.searchRowValue.visibility = View.GONE
+        binding.searchPanelValue.visibility = View.GONE
         binding.actionRowReadonly.visibility = View.GONE
         binding.actionRowEdit.visibility = View.VISIBLE
         binding.typeRowScroll.visibility = View.VISIBLE
@@ -370,7 +373,7 @@ class ValueSheet : BottomSheetDialogFragment() {
         binding.valueEditor.visibility = View.GONE
         binding.valueFull.visibility = View.VISIBLE
         binding.valueScroll.visibility = View.VISIBLE
-        binding.searchRowValue.visibility = View.VISIBLE
+        binding.searchPanelValue.visibility = View.VISIBLE
         binding.actionRowReadonly.visibility = View.VISIBLE
         binding.actionRowEdit.visibility = View.GONE
         binding.typeRowScroll.visibility = View.GONE
@@ -524,16 +527,65 @@ class ValueSheet : BottomSheetDialogFragment() {
         }
     }
 
-    // ---------- 值内搜索 ----------
+    // ---------- 值内搜索（支持正则与替换） ----------
+
+    /** Aa / .* / 替换 三个开关 */
+    private var searchBar: SearchOptionsBar? = null
+
+    /** 当前是否为正则模式（由 searchBar 决定，这里缓存一份避免频繁取值） */
+    private val isRegexSearch: Boolean get() = searchBar?.isRegex == true
+
+    /** 当前是否区分大小写 */
+    private val isCaseSearch: Boolean get() = searchBar?.isCaseSensitive == true
+
+    /** 编译正则；非法返回 null（调用方回退到普通文本搜索） */
+    private fun compileRegex(q: String): Regex? = runCatching {
+        if (isCaseSearch) Regex(q) else Regex(q, RegexOption.IGNORE_CASE)
+    }.getOrNull()
+
+    private fun searchBar(): SearchOptionsBar {
+        val existing = searchBar
+        if (existing != null) return existing
+        val v = com.guaner.jsonviewer.databinding.ViewSearchOptionsBinding.bind(binding.searchPanelValue)
+        val bar = SearchOptionsBar(
+            requireContext(),
+            SearchOptionsBar.Views(
+                optionsRow = v.searchOptionsRow,
+                caseToggle = v.searchCaseToggle,
+                regexToggle = v.searchRegexToggle,
+                replaceToggle = v.searchReplaceToggle,
+                replaceRow = v.searchReplaceRow,
+                replaceInput = v.searchReplaceInput,
+                replaceOne = v.searchReplaceOne,
+                replaceAll = v.searchReplaceAll
+            ),
+            onQueryChanged = {
+                searchHandler.removeCallbacks(searchRunnable)
+                searchHandler.postDelayed(searchRunnable, SEARCH_DEBOUNCE_MS)
+            },
+            onReplaceOne = { replaceValueCurrent() },
+            onReplaceAll = { replaceValueAll() }
+        )
+        searchBar = bar
+        return bar
+    }
 
     private fun runValueSearch() {
         val q = binding.searchInputValue.text?.toString().orEmpty()
         searchMatches.clear()
         if (q.isNotEmpty()) {
-            var idx = shownValue.indexOf(q, 0, ignoreCase = true)
-            while (idx >= 0 && searchMatches.size < MAX_VALUE_MATCHES) {
-                searchMatches.add(idx until idx + q.length)
-                idx = shownValue.indexOf(q, idx + q.length, ignoreCase = true)
+            if (isRegexSearch) {
+                val re = compileRegex(q)
+                if (re == null) {
+                    // 非法正则：标红提示并回退普通文本搜索，不弹窗打断输入
+                    searchBar?.markRegexInvalid(true)
+                    collectPlainMatches(q)
+                } else {
+                    searchBar?.markRegexInvalid(false)
+                    collectRegexMatches(re)
+                }
+            } else {
+                collectPlainMatches(q)
             }
         }
         searchIndex = if (searchMatches.isEmpty()) -1 else 0
@@ -542,9 +594,26 @@ class ValueSheet : BottomSheetDialogFragment() {
         if (searchIndex >= 0) scrollToMatch()
     }
 
+    private fun collectPlainMatches(q: String) {
+        var idx = shownValue.indexOf(q, 0, ignoreCase = !isCaseSearch)
+        while (idx >= 0 && searchMatches.size < MAX_VALUE_MATCHES) {
+            searchMatches.add(idx until idx + q.length)
+            idx = shownValue.indexOf(q, idx + q.length, ignoreCase = !isCaseSearch)
+        }
+    }
+
+    private fun collectRegexMatches(re: Regex) {
+        // 零宽匹配（如 ^ 或 a*）会让 find 卡在原地，跳过空匹配
+        for (m in re.findAll(shownValue)) {
+            if (searchMatches.size >= MAX_VALUE_MATCHES) break
+            if (m.range.isEmpty()) continue
+            searchMatches.add(m.range)
+        }
+    }
+
     private fun updateValueSearchLabel() {
         binding.searchCountValue.text = when {
-            searchMatches.isEmpty() -> "0/0"
+            searchMatches.isEmpty() -> if (isRegexSearch) "无匹配" else "0/0"
             searchMatches.size >= MAX_VALUE_MATCHES -> "${searchIndex + 1}/$MAX_VALUE_MATCHES+"
             else -> "${searchIndex + 1}/${searchMatches.size}"
         }
@@ -606,11 +675,78 @@ class ValueSheet : BottomSheetDialogFragment() {
 
     private fun closeValueSearch() {
         binding.searchInputValue.setText("")
+        searchBar?.clearReplaceInput()
         searchMatches.clear()
         searchIndex = -1
         binding.searchCountValue.text = "0/0"
         // 只清 span，不重设文本
         highlightValue()
+        // 关闭搜索时若没保存编辑，直接退出编辑态，避免看起来「值变了」
+        if (editing) requestExitEditMode()
+    }
+
+    // ---------- 替换 ----------
+
+    /**
+     * 替换当前命中。
+     *
+     * 值编辑框（[binding.valueEditor]）在没有进入编辑态时是隐藏的，但它是这份文本的唯一
+     * 可写副本——替换直接改它，再同步回 [shownValue] 与只读视图，这样用户点「保存」时
+     * 拿到的就是替换后的文本。第一次替换会自动切到编辑态。
+     */
+    private fun replaceValueCurrent() {
+        if (searchMatches.isEmpty()) {
+            toast("没有可替换的匹配")
+            return
+        }
+        ensureEditableForReplace()
+        applyReplacement(onlyCurrent = true)
+    }
+
+    private fun replaceValueAll() {
+        if (searchMatches.isEmpty()) {
+            toast("没有可替换的匹配")
+            return
+        }
+        ensureEditableForReplace()
+        applyReplacement(onlyCurrent = false)
+    }
+
+    /** 替换前切到编辑态：用户能直接看到改了什么，也能撤销 */
+    private fun ensureEditableForReplace() {
+        if (editing) return
+        beginEditing(shownValue)
+    }
+
+    private fun applyReplacement(onlyCurrent: Boolean) {
+        val q = binding.searchInputValue.text?.toString().orEmpty()
+        if (q.isEmpty()) return
+        val replacement = binding.searchPanelValue
+            .findViewById<android.widget.EditText>(R.id.searchReplaceInput)
+            ?.text?.toString().orEmpty()
+        val current = binding.valueEditor.getEditableText()
+        // 命中位置基于 shownValue，而编辑框里可能已被用户改过；
+        // 两者不一致时先以编辑框为准重新搜一遍，避免替换到错误位置
+        if (current != shownValue) {
+            shownValue = current
+            runValueSearch()
+            if (searchMatches.isEmpty()) {
+                toast("内容已变化，匹配失效")
+                return
+            }
+        }
+        val targets = if (onlyCurrent) {
+            listOfNotNull(searchMatches.getOrNull(searchIndex))
+        } else {
+            searchMatches.toList()
+        }
+        if (targets.isEmpty()) return
+        val updated = TextReplacer.replace(shownValue, targets, replacement)
+        shownValue = updated
+        binding.valueEditor.setEditableText(updated)
+        val newCount = if (onlyCurrent) 1 else targets.size
+        toast("已替换 $newCount 处")
+        runValueSearch()
     }
 
     override fun onDestroyView() {
