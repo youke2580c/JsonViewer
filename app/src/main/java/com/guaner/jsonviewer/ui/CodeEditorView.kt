@@ -2,8 +2,10 @@ package com.guaner.jsonviewer.ui
 
 import android.content.Context
 import android.graphics.Typeface
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.Editable
 import android.text.Layout
 import android.text.Spannable
@@ -28,6 +30,7 @@ import com.guaner.jsonviewer.json.JsonError
 import com.guaner.jsonviewer.json.JsonLimits
 import com.guaner.jsonviewer.theme.ThemeColors
 import com.guaner.jsonviewer.theme.ThemeManager
+import com.guaner.jsonviewer.text.LineStarts
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -79,6 +82,21 @@ class CodeEditorView @JvmOverloads constructor(
         updateScrollThumb()
     }
 
+    // 最近一次文本变化的位置信息（用于判断行结构是否真的变了）
+    private var pendingStart = 0
+    private var pendingBefore = 0
+    private var pendingCount = 0
+    private var pendingStructural = true
+
+    /** 用户自己加的 span：自己记账比每次 getSpans 全表扫描便宜，也便于批量清理 */
+    private val appliedSpans = ArrayList<Any>(512)
+
+    /** 整段替换（导入 / 格式化）时禁用行首增量：旧行首表对新文本没有意义 */
+    private var skipIncrementalOnce = false
+
+    /** 最近一次编辑的时间戳：编辑后的静默期内不让滚动逻辑抢先重建 span */
+    private var lastEditAt = 0L
+
     /** 滚动停止后的增量着色（滚动过程中不着色，避免掉帧） */
     private var scrollRefreshPending = false
     private val scrollRefreshRunnable = Runnable {
@@ -125,12 +143,41 @@ class CodeEditorView @JvmOverloads constructor(
 
         // 默认关闭自动换行：每个逻辑行占一个可视行，行号栏才能逐行对齐；超长行横向滚动
         editor.setHorizontallyScrolling(true)
+        // 不让系统把文本塞进 View 状态 Bundle：几百 KB 的文本会在切后台 / 转屏时
+        // 触发一次巨大的 Parcel 写入（卡顿甚至 TransactionTooLargeException）。
+        // 内容恢复由应用自己走会话存储，这里不需要系统帮忙。
+        editor.isSaveEnabled = false
+
+        // 断行策略用 SIMPLE：默认的 HIGH_QUALITY 会做段落级最优断行，
+        // 超大文本下每次按键重建 Layout 都要花几十毫秒，是输入卡顿的主因之一。
+        // 等宽字体 + 代码场景本来也不需要高质量断行与连字符。
+        editor.breakStrategy = Layout.BREAK_STRATEGY_SIMPLE
+        editor.hyphenationFrequency = Layout.HYPHENATION_FREQUENCY_NONE
+        // 自动填充框架会扫描文本内容推断字段，超大文本下是纯粹的浪费
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            editor.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+        }
 
         editor.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
+                pendingStart = start
+                pendingBefore = count
+                // 大段删除不必逐字检查：反正也不走增量路径
+                pendingStructural = count > INCREMENTAL_MAX_CHARS ||
+                    (count > 0 && s != null && LineStarts.hasNewline(s, start, count))
+            }
+
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                pendingCount = count
+                if (count > INCREMENTAL_MAX_CHARS) {
+                    pendingStructural = true
+                } else if (count > 0 && s != null && LineStarts.hasNewline(s, start, count)) {
+                    pendingStructural = true
+                }
+            }
+
             override fun afterTextChanged(s: Editable?) {
-                if (!applyingSpans) scheduleRefresh()
+                if (!applyingSpans) onContentEdited()
                 // 粘贴/分享进来的超大内容：不强行截断用户正在编辑的文本（会打乱光标），
                 // 但明确警告一次，让用户知道已超出安全上限、部分功能将降级
                 val len = s?.length ?: 0
@@ -170,6 +217,7 @@ class CodeEditorView @JvmOverloads constructor(
     var text: String
         get() = editor.text?.toString() ?: ""
         set(value) {
+            skipIncrementalOnce = true
             editor.setText(value)
         }
 
@@ -195,17 +243,20 @@ class CodeEditorView @JvmOverloads constructor(
         stopFling()
         autoWrapNotified = false
         highlightedWindow = IntRange.EMPTY
+        appliedSpans.clear()
         // 先按内容预判换行模式：否则会先按「一行几十万像素」排版一次、再切换重建一次。
         // 切换前先清空旧文本（Layout 立刻变空，代价极低），保证只对新文本排版一次。
-        val maxLine = maxLineLength(value)
+        val maxLine = LineStarts.maxLineLength(value)
         autoWrap = if (autoWrap) maxLine > SUPER_LONG_LINE_RELEASE
         else maxLine > SUPER_LONG_LINE_TRIGGER
         val wrap = userWrap || autoWrap
         if (appliedWrap != wrap) {
+            skipIncrementalOnce = true
             editor.setText("")
             appliedWrap = wrap
             editor.setHorizontallyScrolling(!wrap)
         }
+        skipIncrementalOnce = true
         editor.setText(value)
         editor.setSelection(0)
         post {
@@ -218,22 +269,6 @@ class CodeEditorView @JvmOverloads constructor(
             autoWrapNotified = true
             onAutoWrap?.invoke()
         }
-    }
-
-    /** 最长逻辑行的字符数（用于预判是否需要自动换行） */
-    private fun maxLineLength(text: CharSequence): Int {
-        var max = 0
-        var start = 0
-        val n = text.length
-        for (i in 0 until n) {
-            if (text[i] == '\n') {
-                val len = i - start
-                if (len > max) max = len
-                start = i + 1
-            }
-        }
-        val tail = n - start
-        return if (tail > max) tail else max
     }
 
     fun setError(error: JsonError?) {
@@ -794,10 +829,39 @@ class CodeEditorView @JvmOverloads constructor(
 
     // ---------- 内部 ----------
 
+    /**
+     * 一次文本编辑后的处理。
+     *
+     * 行号表能增量平移就立刻平移（O(行数)），让打字时行号不错位；
+     * 语法高亮一律等输入停顿后再重建——超大文本下每次按键重建几千个 span
+     * 是打字卡顿的直接来源，而停顿后着色一次完全够用。
+     */
+    private fun onContentEdited() {
+        lastEditAt = SystemClock.uptimeMillis()
+        val skip = skipIncrementalOnce
+        skipIncrementalOnce = false
+        val small = !skip && !pendingStructural &&
+            pendingBefore <= INCREMENTAL_MAX_CHARS && pendingCount <= INCREMENTAL_MAX_CHARS
+        if (small) shiftLineStarts()
+        scheduleRefresh()
+    }
+
+    /** 行结构没变时只把变化点之后的行首整体平移，避免每次按键 O(n) 重扫全文 */
+    private fun shiftLineStarts() {
+        val text = editor.text ?: return
+        val next = LineStarts.shift(
+            lineNumbers.logicalStarts, pendingStart, pendingBefore, pendingCount, text.length
+        )
+        if (next == null) return
+        if (next !== lineNumbers.logicalStarts) lineNumbers.logicalStarts = next
+    }
+
     /** 输入停顿后再刷新：连续打字期间不重复做高亮/行号重建，避免大文本卡顿 */
     private fun scheduleRefresh() {
         handler.removeCallbacks(refreshRunnable)
-        handler.postDelayed(refreshRunnable, 250)
+        val len = editor.text?.length ?: 0
+        // 超大文本把停顿窗口再拉长：保证两次重建之间能连续输入足够多的字符
+        handler.postDelayed(refreshRunnable, if (len > LARGE_TEXT_CHARS) LARGE_TEXT_REFRESH_MS else REFRESH_MS)
     }
 
     /**
@@ -805,6 +869,9 @@ class CodeEditorView @JvmOverloads constructor(
      * 滚动过程中完全不改 span，避免每帧触发重排/重绘导致抖动。
      */
     private fun maybeRefreshHighlight() {
+        // 刚编辑过：着色统一交给 scheduleRefresh 的防抖窗口，滚动逻辑别抢先重建，
+        // 否则打字时每 180ms 就被光标滚动触发一次全量着色，等于防抖白做
+        if (SystemClock.uptimeMillis() - lastEditAt < EDIT_SPAN_QUIET_MS) return
         handler.removeCallbacks(scrollRefreshRunnable)
         val win = visibleWindow()
         if (win.isEmpty()) return
@@ -850,20 +917,22 @@ class CodeEditorView @JvmOverloads constructor(
         if (editable !is Spannable) return
         applyingSpans = true
         try {
-            // 只清除自己加的 span，避免影响输入法/选择态 span
-            editable.getSpans(0, editable.length, FgSpan::class.java).forEach { editable.removeSpan(it) }
-            editable.getSpans(0, editable.length, BgSpan::class.java).forEach { editable.removeSpan(it) }
+            // 只清除自己加的 span：自己记账比每次 getSpans 全表扫描便宜，
+            // 也不会碰到输入法的组合span 与选择 handle
+            for (i in appliedSpans.indices) editable.removeSpan(appliedSpans[i])
+            appliedSpans.clear()
 
             val len = editable.length
             val win = highlightWindow()
             highlightedWindow = win
 
-            /** 单次最多添加的 span 数：防止极端文本下 span 爆炸拖慢绘制 */
-            var spanBudget = MAX_SPANS
+            /** 单次最多添加的 span 数：按可视行数估算，防止极端文本下 span 爆炸拖慢绘制 */
+            var spanBudget = spanBudgetFor(win)
 
             // 1) 语法高亮：只处理可视区域（含余量）切片。
-            // 全文正则 + 全量 span 是大文件滚动卡顿的主要来源。
-            if (!win.isEmpty() && len > 0) {
+            // 全文正则 + 全量 span 是大文件滚动卡顿的主要来源；文本极大时连切片着色也放弃，
+            // 只保留错误行与搜索命中，把输入流畅度放在第一位。
+            if (len <= HIGHLIGHT_OFF_CHARS && !win.isEmpty() && len > 0) {
                 val from = win.first.coerceIn(0, len)
                 val to = (win.last + 1).coerceIn(from, len)
                 if (to > from) {
@@ -875,9 +944,9 @@ class CodeEditorView @JvmOverloads constructor(
                         // 超长 token（几万字符的字符串值）跳过：一个跨几万字符的 span
                         // 对观感帮助很小，却会显著拖慢 TextView 的绘制
                         if (e > s && e - s <= MAX_TOKEN_CHARS) {
-                            editable.setSpan(
-                                FgSpan(colorOf(t.kind)), s, e, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-                            )
+                            val span = FgSpan(colorOf(t.kind))
+                            editable.setSpan(span, s, e, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                            appliedSpans.add(span)
                             spanBudget--
                         }
                     }
@@ -891,15 +960,13 @@ class CodeEditorView @JvmOverloads constructor(
                     val s = start.coerceAtMost(len)
                     val e = end.coerceAtMost(len)
                     if (e > s) {
-                        editable.setSpan(
-                            BgSpan(themeColors.errorLine),
-                            s, e, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-                        )
+                        val lineBg = BgSpan(themeColors.errorLine)
+                        editable.setSpan(lineBg, s, e, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                        appliedSpans.add(lineBg)
                         val colStart = err.offset.coerceIn(s, e - 1)
-                        editable.setSpan(
-                            BgSpan(themeColors.errorColumn),
-                            colStart, colStart + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-                        )
+                        val colBg = BgSpan(themeColors.errorColumn)
+                        editable.setSpan(colBg, colStart, colStart + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                        appliedSpans.add(colBg)
                     }
                 }
             }
@@ -918,10 +985,9 @@ class CodeEditorView @JvmOverloads constructor(
                     if (e > s) {
                         val color =
                             if (i == searchCurrent) themeColors.searchCurrent else themeColors.searchMatch
-                        editable.setSpan(
-                            BgSpan(color),
-                            s, e, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-                        )
+                        val span = BgSpan(color)
+                        editable.setSpan(span, s, e, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                        appliedSpans.add(span)
                         budget--
                     }
                 }
@@ -941,28 +1007,22 @@ class CodeEditorView @JvmOverloads constructor(
         TokenKind.PUNCT -> themeColors.jsonPunct
     }
 
+    /** 本次着色允许的 span 数：按可视行数估算，避免一次性给整屏塞几千个 span */
+    private fun spanBudgetFor(win: IntRange): Int {
+        if (win.isEmpty()) return 0
+        val layout = editor.layout ?: return MAX_SPANS
+        val (first, last) = visibleLines(layout)
+        val rows = (last - first + 1 + MARGIN_LINES * 2).coerceAtLeast(1)
+        return (rows * SPANS_PER_LINE).coerceIn(MIN_SPANS, MAX_SPANS)
+    }
+
     /** 一次 O(n) 扫描建立逻辑行起始表（供行号栏按可视行查号），并顺带统计最长行 */
     private fun rebuildLineStarts() {
         val text = editor.text ?: return
-        val n = text.length
-        var arr = IntArray(64)
-        arr[0] = 0
-        var k = 1
-        var maxLine = 0
-        var lineStart = 0
-        for (i in 0 until n) {
-            if (text[i] == '\n') {
-                val len = i - lineStart
-                if (len > maxLine) maxLine = len
-                lineStart = i + 1
-                if (k == arr.size) arr = arr.copyOf(arr.size * 2)
-                arr[k++] = i + 1
-            }
-        }
-        if (n - lineStart > maxLine) maxLine = n - lineStart
-        val starts = if (k == arr.size) arr else arr.copyOf(k)
+        val starts = LineStarts.build(text)
         lineNumbers.logicalStarts = starts
         updateGutterWidth(starts.size)
+        val maxLine = LineStarts.maxLineLength(text)
 
         // 超长行（几万字符的值）在关闭换行时会被排成一行，绘制成本 O(字符数)，
         // 滚动时每帧都要从行首累加定位，表现为卡死/抖动。这里自动降级为软换行。
@@ -1022,11 +1082,35 @@ class CodeEditorView @JvmOverloads constructor(
         /** 单个 token 的最大着色长度：超过则跳过（几万字符的字符串值） */
         const val MAX_TOKEN_CHARS = 3_000
 
-        /** 单次最多添加的语法高亮 span 数 */
-        const val MAX_SPANS = 3_000
+        /** 单次最多添加的语法高亮 span 数（按可视行估算后的硬上限） */
+        const val MAX_SPANS = 1_200
+
+        /** 每行预留的 token 数：把 span 预算限制在「看得见的部分」 */
+        const val SPANS_PER_LINE = 24
+
+        /** 可视行极少时的保底预算 */
+        const val MIN_SPANS = 200
 
         /** 单次最多添加的搜索命中 span 数 */
-        const val MAX_SEARCH_SPANS = 400
+        const val MAX_SEARCH_SPANS = 200
+
+        /** 单次变化超过该长度就不做行首增量平移，直接全量重建 */
+        const val INCREMENTAL_MAX_CHARS = 2_048
+
+        /** 输入停顿后重建高亮与行号的延迟 */
+        const val REFRESH_MS = 400L
+
+        /** 超大文本的停顿窗口：打字期间完全不动 span，停下再着色 */
+        const val LARGE_TEXT_REFRESH_MS = 900L
+
+        /** 超过该长度按「超大文本」处理 */
+        const val LARGE_TEXT_CHARS = 200_000
+
+        /** 超过该长度彻底关闭语法高亮（错误行与搜索命中仍保留） */
+        const val HIGHLIGHT_OFF_CHARS = 400_000
+
+        /** 编辑后的静默期：期间滚动不触发着色，避免打断输入 */
+        const val EDIT_SPAN_QUIET_MS = 700L
 
         /** 单条逻辑行超过该长度 → 自动开启换行（超长单行绘制极慢） */
         const val SUPER_LONG_LINE_TRIGGER = 3_000

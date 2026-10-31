@@ -73,6 +73,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
@@ -102,6 +104,8 @@ class MainActivity : AppCompatActivity() {
     private var treeIndex: Map<String, TreeNode> = emptyMap()
 
     private var parseJob: Job? = null
+    /** 解析串行闸门：同时最多跑一个解析任务，避免连续输入堆积后台 CPU */
+    private val parseGate = Mutex()
     private var treeSearchJob: Job? = null
 
     // 代码模式搜索状态
@@ -365,8 +369,11 @@ class MainActivity : AppCompatActivity() {
             SessionStore.clear(applicationContext)
             return
         }
-        val text = binding.editorView.text
-        if (text == lastSavedSession) return
+        val seq = binding.editorView.textSequence
+        val prev = lastSavedSession
+        // 长度不同必然要存；长度相同时用 contentEquals 就地比较，省掉一次全文拷贝
+        if (prev != null && prev.length == seq.length && prev.contentEquals(seq)) return
+        val text = seq.toString()
         lastSavedSession = text
         val appContext = applicationContext
         if (sync) {
@@ -995,27 +1002,34 @@ class MainActivity : AppCompatActivity() {
     private fun scheduleParse() {
         parseJob?.cancel()
         parseJob = lifecycleScope.launch {
-            delay(350)
-            // 在主线程取一次文本快照（防抖后只取一次），解析与建索引放后台
-            val snapshot = binding.editorView.text
-            val parsed = try {
-                withContext(Dispatchers.Default) {
-                    val r = JsonParser.parse(snapshot)
-                    val idx = if (r is ParseResult.Success) {
-                        TreeFlattener.buildIndex(r.root)
-                    } else {
-                        emptyMap()
+            // 超大文本把防抖拉长：解析一次要遍历全文，来回切换只会让 CPU 一直满负荷，
+            // 抢占主线程时间片后手感就是「打字一顿一顿」
+            val len = binding.editorView.textSequence.length
+            delay(if (len > PARSE_SLOW_CHARS) PARSE_SLOW_DELAY else PARSE_DELAY)
+            // 串行化：上一次解析（纯 CPU 循环，不响应取消）没跑完时先等它结束，
+            // 避免连续停顿触发多个解析同时抢核
+            parseGate.withLock {
+                // 在主线程取一次文本快照（防抖后只取一次），解析与建索引放后台
+                val snapshot = binding.editorView.text
+                val parsed = try {
+                    withContext(Dispatchers.Default) {
+                        val r = JsonParser.parse(snapshot)
+                        val idx = if (r is ParseResult.Success) {
+                            TreeFlattener.buildIndex(r.root)
+                        } else {
+                            emptyMap()
+                        }
+                        r to idx
                     }
-                    r to idx
+                } catch (e: Throwable) {
+                    // 解析是纯计算，理论上只会返回 Failure；这里兜住 StackOverflowError /
+                    // OutOfMemoryError 这类 Error，避免后台线程把整个进程带走
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    toast("解析失败：${e.javaClass.simpleName}")
+                    return@withLock
                 }
-            } catch (e: Throwable) {
-                // 解析是纯计算，理论上只会返回 Failure；这里兜住 StackOverflowError /
-                // OutOfMemoryError 这类 Error，避免后台线程把整个进程带走
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                toast("解析失败：${e.javaClass.simpleName}")
-                return@launch
+                applyParseResult(parsed.first, parsed.second)
             }
-            applyParseResult(parsed.first, parsed.second)
         }
     }
 
@@ -2215,6 +2229,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        /** 常规文本的解析防抖 */
+        private const val PARSE_DELAY = 500L
+
+        /** 超大文本的解析防抖：解析要遍历全文，太频繁会把 CPU 拉满影响输入 */
+        private const val PARSE_SLOW_DELAY = 900L
+
+        /** 超过该长度按「超大文本」处理 */
+        private const val PARSE_SLOW_CHARS = 200_000
+
         private const val MENU_VIEW_VALUE = 10
         private const val MENU_COPY_PATH = 1
         private const val MENU_COPY_VALUE = 2
