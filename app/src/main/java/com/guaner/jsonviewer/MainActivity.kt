@@ -432,8 +432,10 @@ class MainActivity : AppCompatActivity() {
         }
         val seq = binding.editorView.textSequence
         val prev = lastSavedSession
-        // 长度不同必然要存；长度相同时用 contentEquals 就地比较，省掉一次全文拷贝
-        if (prev != null && prev.length == seq.length && prev.contentEquals(seq)) return
+        // 长度不同必然要存；长度相同时先快照成 String 再比较。
+        // 编辑器内容不是一段连续字符数组，逐字符 contentEquals 会反复做行列换算，
+        // 在这里先用 toString 走一次批量拼接反而更快（只在长度相同时才付这笔开销）。
+        if (prev != null && prev.length == seq.length && prev == seq.toString()) return
         val text = seq.toString()
         lastSavedSession = text
         val appContext = applicationContext

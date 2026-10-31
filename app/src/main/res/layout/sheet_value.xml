@@ -149,20 +149,11 @@
             android:background="@drawable/scrollbar_thumb"
             android:visibility="gone" />
 
-        <!-- 编辑态：替换只读文本，独立滚动；纯文本（不带 span），输入时不吃高亮开销 -->
-        <EditText
+        <!-- 编辑态：与代码页共用同一个编辑器（高亮/行号/缩放/主题一致） -->
+        <com.guaner.jsonviewer.ui.CodeEditorView
             android:id="@+id/valueEditor"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:background="@android:color/transparent"
-            android:fontFamily="monospace"
-            android:gravity="top|start"
-            android:importantForAutofill="no"
-            android:inputType="textMultiLine|textNoSuggestions"
-            android:padding="0dp"
-            android:scrollbars="vertical"
-            android:textColor="@color/editor_text"
-            android:textSize="13sp"
             android:visibility="gone" />
     </FrameLayout>
 

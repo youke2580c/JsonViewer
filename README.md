@@ -14,7 +14,7 @@
   <a href="https://github.com/zmn001125/JsonViewer/actions/workflows/android.yml"><img src="https://github.com/zmn001125/JsonViewer/actions/workflows/android.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/Android-7.0%2B-3DDC84.svg" alt="Android 7.0+">
-  <img src="https://img.shields.io/badge/Kotlin-1.9-7F52FF.svg" alt="Kotlin">
+  <img src="https://img.shields.io/badge/Kotlin-2.1-7F52FF.svg" alt="Kotlin">
 </p>
 
 ---
@@ -35,7 +35,7 @@
 
 ### 查看与定位
 
-- **双模式**：代码模式带行号、语法高亮、软换行、双指缩放；表单模式**逐层进入**，每次只渲染当前层，节点多也不卡。
+- **双模式**：代码模式基于自绘编辑器 [Sora Editor](#致谢)，带行号、增量语法高亮、软换行、双指缩放，**几 MB 文本下输入/删除同样跟手**；表单模式**逐层进入**，每次只渲染当前层，节点多也不卡。
 - **面包屑导航**：`$ › store › book[2] › title` 每一段可点击回退；右侧显示本层节点数，一键复制当前 JSONPath。
 - **结构大纲**：边缘滑动或点按钮呼出，全树展开/折叠、只看容器、按名称或值过滤，点击即跳转并闪烁定位。
 - **JSONPath 查询**：支持 `$.a.b`、`$[0]`、`$..x`、`[*]`、切片、过滤表达式；结果可逐条定位或整体复制。
@@ -68,7 +68,7 @@
 
 前往 [**Releases**](https://github.com/zmn001125/JsonViewer/releases/latest) 下载最新 APK：
 
-- `json-viewer-1.1.apk` — 正式版，release 签名，可直接安装（Android 7.0+，约 2.5 MB）
+- `json-viewer-1.4.apk` — 正式版，release 签名，可直接安装（Android 7.0+，约 2.5 MB）
 - 安装时如提示「未知来源」，在系统设置里允许对应应用安装即可
 
 > 从旧版本（`com.jsonviewer`）升级的用户请注意：包名已改为 `com.guaner.jsonviewer`，新旧版本可以共存，但本地历史与设置不会自动迁移。
@@ -110,13 +110,14 @@ app/src/main/java/com/guaner/jsonviewer/
 ├── net/                         # HttpURLConnection 引擎、请求头 JSON 解析
 ├── data/                        # 设置、导入历史、链接历史、UA 配置、会话存储
 ├── theme/                       # 主题模型、配色推导、预设与自定义主题
+├── editor/                      # 代码编辑器：JSON 增量着色语言、主题→配色映射
 ├── crash/                       # 崩溃日志落盘与解析
 └── ui/                          # 编辑器、树、大纲、值面板、网络面板、设置页
 app/src/test/                    # 纯 JVM 单元测试（解析 / 路径 / 序列化 / 设置）
 docs/screenshots/                # README 截图
 ```
 
-技术栈：Kotlin + ViewBinding + Material 3，解析用 Jackson Core 流式 API（异常自带字符偏移，便于换算行列），查询用 Jayway JsonPath。没有引入图片加载、数据库或网络库，网络请求直接用 `HttpURLConnection`。
+技术栈：Kotlin + ViewBinding + Material 3，代码编辑用 [Sora Editor](https://github.com/Rosemoe/sora-editor)，解析用 Jackson Core 流式 API（异常自带字符偏移，便于换算行列），查询用 Jayway JsonPath。没有引入图片加载、数据库或网络库，网络请求直接用 `HttpURLConnection`。
 
 ## 权限与隐私
 
@@ -136,6 +137,7 @@ docs/screenshots/                # README 截图
 
 ## 更新日志
 
+- **1.4** — 代码编辑改用 Sora Editor：几 MB 文本下打字、删除、滚动全部跟手；代码页、临时编辑器、值编辑框三处统一为同一套编辑器，配色 / 字号 / 字体 / 换行全部跟随主题
 - **1.3.1** — 修复「提示已恢复但内容为空」；恢复大文本时不再强制滚动与立即着色
 - **1.3** — 优化超大文本的代码编辑手感；新增启动保护：异常退出后本次不再自动恢复上次内容，避免「一打开就崩、进不去」
 - **1.2** — 许可证由 MIT 变更为 GNU GPL v3.0：修改或分发须同样开源
@@ -144,6 +146,7 @@ docs/screenshots/                # README 截图
 
 ## 致谢
 
+- [Sora Editor](https://github.com/Rosemoe/sora-editor) — 代码编辑器的排版、行号、选区、撤销栈与自绘渲染（LGPL-2.1）
 - [Jackson Core](https://github.com/FasterXML/jackson-core) — 流式 JSON 解析
 - [Jayway JsonPath](https://github.com/json-path/JsonPath) — JSONPath 查询
 - [Material Components for Android](https://github.com/material-components/material-components-android)
@@ -164,5 +167,7 @@ docs/screenshots/                # README 截图
 
 > **关于历史版本**：v1.0 与 v1.1 曾以 MIT 协议发布，已获得的授权不可撤销，仍按 MIT 处理。GPL-3.0 自 v1.2 起生效。
 
-第三方依赖仍遵循各自协议：Jackson Core（Apache-2.0）、Jayway JsonPath（Apache-2.0）、AndroidX / Material Components（Apache-2.0），均与本协议兼容。
+第三方依赖仍遵循各自协议：Sora Editor（**LGPL-2.1**）、Jackson Core（Apache-2.0）、Jayway JsonPath（Apache-2.0）、AndroidX / Material Components（Apache-2.0），均与 GPL-3.0 兼容。
+
+> **关于 Sora Editor**：它以 LGPL-2.1 发布并以未修改的二进制形式（Maven 依赖）链接进本应用。GPL-3.0 允许这种链接方式；如果你 fork 本仓库并修改了 Sora Editor 自身源码，需要按 LGPL-2.1 开放那部分改动。
 

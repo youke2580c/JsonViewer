@@ -155,8 +155,8 @@ class ValueSheet : BottomSheetDialogFragment() {
         binding.copyValueButton.setTextColor(ThemeManager.contrastText(colors.accent))
         binding.copyPathButton.setTextColor(colors.accent)
         binding.editValueButton.setTextColor(colors.accent)
-        binding.valueEditor.setTextColor(colors.text)
-        binding.valueEditor.setHintTextColor(colors.gutterText)
+        // 编辑框是统一编辑器：配色由它自己按主题映射，这里只触发一次应用
+        binding.valueEditor.applyThemeFromManager()
         binding.resetValueButton.setTextColor(colors.gutterText)
         binding.cancelEditButton.setTextColor(colors.text)
         binding.saveValueButton.backgroundTintList = ColorStateList.valueOf(colors.accent)
@@ -221,10 +221,10 @@ class ValueSheet : BottomSheetDialogFragment() {
         binding.editValueButton.setOnClickListener { enterEditMode() }
         binding.resetValueButton.setOnClickListener {
             valueType = originalType
-            binding.valueEditor.setText(originalText)
-            binding.valueEditor.setSelection(0)
+            binding.valueEditor.setEditableText(originalText)
+            binding.valueEditor.setCursorOffset(0)
             // 原来的类型是 null 时输入框仍要锁住
-            binding.valueEditor.isEnabled = valueType != NodeType.NULL
+            binding.valueEditor.setEditorEditable(valueType != NodeType.NULL)
             styleTypeRow()
             binding.valueMeta.text = editHint()
             toast("已恢复为打开时的内容与类型")
@@ -297,12 +297,12 @@ class ValueSheet : BottomSheetDialogFragment() {
         if (type == valueType) return
         val prev = valueType
         valueType = type
-        val current = binding.valueEditor.text?.toString().orEmpty()
-        binding.valueEditor.isEnabled = type != NodeType.NULL
+        val current = binding.valueEditor.getEditableText()
+        binding.valueEditor.setEditorEditable(type != NodeType.NULL)
         val filled = ValueDraft.coerceText(current, prev, type)
         if (filled != current) {
-            binding.valueEditor.setText(filled)
-            binding.valueEditor.setSelection(0)
+            binding.valueEditor.setEditableText(filled)
+            binding.valueEditor.setCursorOffset(0)
         }
         styleTypeRow()
         binding.valueMeta.text = editHint()
@@ -342,9 +342,9 @@ class ValueSheet : BottomSheetDialogFragment() {
         editing = true
         originalText = value
         originalType = valueType
-        binding.valueEditor.isEnabled = valueType != NodeType.NULL
-        binding.valueEditor.setText(initialText)
-        binding.valueEditor.setSelection(0)
+        binding.valueEditor.setEditorEditable(valueType != NodeType.NULL)
+        binding.valueEditor.setEditableText(initialText)
+        binding.valueEditor.setCursorOffset(0)
         binding.valueEditor.visibility = View.VISIBLE
         binding.valueFull.visibility = View.GONE
         binding.valueScroll.visibility = View.GONE
@@ -358,12 +358,9 @@ class ValueSheet : BottomSheetDialogFragment() {
         binding.valueMeta.text = editHint()
         // 编辑中不允许下滑/点外部关闭，避免误触丢改动；退出走「取消」或返回键（会询问）
         isCancelable = false
-        binding.valueEditor.requestFocus()
+        binding.valueEditor.requestEditorFocus()
         binding.valueEditor.post {
-            binding.valueEditor.scrollTo(0, 0)
-            val imm = requireContext().getSystemService(Context.INPUT_METHOD_SERVICE)
-                as? InputMethodManager
-            imm?.showSoftInput(binding.valueEditor, InputMethodManager.SHOW_IMPLICIT)
+            binding.valueEditor.scrollToTop()
         }
     }
 
@@ -377,7 +374,7 @@ class ValueSheet : BottomSheetDialogFragment() {
         binding.actionRowReadonly.visibility = View.VISIBLE
         binding.actionRowEdit.visibility = View.GONE
         binding.typeRowScroll.visibility = View.GONE
-        binding.valueEditor.isEnabled = true
+        binding.valueEditor.setEditorEditable(true)
         binding.valueMeta.setTextColor(ThemeManager.activeColors.gutterText)
         binding.valueMeta.text = defaultMeta
         isCancelable = true
@@ -387,7 +384,7 @@ class ValueSheet : BottomSheetDialogFragment() {
     }
 
     private fun isDirty(): Boolean =
-        editing && (binding.valueEditor.text?.toString().orEmpty() != originalText ||
+        editing && (binding.valueEditor.getEditableText() != originalText ||
             valueType != originalType)
 
     private fun requestExitEditMode() {
@@ -405,7 +402,7 @@ class ValueSheet : BottomSheetDialogFragment() {
     }
 
     private fun saveEdit() {
-        val text = binding.valueEditor.text?.toString().orEmpty()
+        val text = binding.valueEditor.getEditableText()
         // 文本和类型都没变：直接退出编辑态，不必写回
         if (text == originalText && valueType == originalType) {
             exitEditMode()

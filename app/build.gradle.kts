@@ -11,8 +11,8 @@ android {
         applicationId = "com.guaner.jsonviewer"
         minSdk = 24
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.3.1"
+        versionCode = 6
+        versionName = "1.4"
     }
 
     signingConfigs {
@@ -91,6 +91,10 @@ dependencies {
 
     implementation("com.fasterxml.jackson.core:jackson-core:2.15.3")
     implementation("com.jayway.jsonpath:json-path:2.8.0")
+
+    // 代码编辑器：自绘增量渲染，几 MB 文本下输入/删除仍然跟手。
+    // 0.23.6 是中央仓库上的稳定版（0.24.x 只在快照仓库）
+    implementation("io.github.Rosemoe.sora-editor:editor:0.23.6")
 
     testImplementation("junit:junit:4.13.2")
 }
