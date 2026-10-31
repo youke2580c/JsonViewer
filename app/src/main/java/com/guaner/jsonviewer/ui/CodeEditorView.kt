@@ -1,6 +1,9 @@
 package com.guaner.jsonviewer.ui
 
 import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.Handler
 import android.os.Looper
@@ -22,6 +25,7 @@ import io.github.rosemoe.sora.lang.diagnostic.DiagnosticRegion
 import io.github.rosemoe.sora.lang.diagnostic.DiagnosticsContainer
 import io.github.rosemoe.sora.widget.CodeEditor
 import io.github.rosemoe.sora.widget.EditorSearcher
+import io.github.rosemoe.sora.widget.schemes.EditorColorScheme
 import kotlin.math.abs
 
 /**
@@ -214,12 +218,15 @@ class CodeEditorView @JvmOverloads constructor(
     /**
      * 跳转并高亮一段区间（大纲 / 快捷跳转 / 搜索定位）。
      *
-     * 高亮分两层，都不带波浪线：
-     * - **整行浅色底**：从字段所在行首到行尾，`SEVERITY_TYPO` 在 Sora 里是带背景的细标记
-     * - **字段名实色底**：只覆盖 [start]–[end]（键名或值本身），用 `SEVERITY_NONE`——
-     *   它对应用色方案里的 `STATIC_SPAN_BACKGROUND`，是纯底色、**不画波浪线**
+     * 高亮分两层：
+     * - **整行浅色底**：从字段所在行首到行尾，走诊断区 `SEVERITY_TYPO`
+     * - **字段名实色底**：只覆盖 [start]–[end]（键名或值本身），由 [onDraw] 自己画矩形
      *
-     * 早期实现只用一段 `SEVERITY_TYPO` 覆盖字段名，结果就是「一条波浪线，看不清高亮在哪」。
+     * 为什么字段名不用诊断区？
+     * Sora 的 `EditorRenderer.drawDiagnosticIndicators` 里是
+     * `severityColorId = sDiagnosticsColorMapping[severity]; if (severityColorId == 0) continue;`
+     * 而 `SEVERITY_NONE = 0` 映射到 0 → 整段被跳过，且它画的只是波浪线/下划线，不是背景块。
+     * 所以字段名的「实色底」只能自己按 `Layout` 的行列坐标绘制。
      */
     fun flashRange(start: Int, end: Int) {
         val content = getText()
@@ -245,6 +252,8 @@ class CodeEditorView @JvmOverloads constructor(
 
         applyDiagnostics(currentError)
         jumpTo(s, takeFocus = false)
+        // 字段名实色底由 onDraw 自绘，这里必须显式重绘一次
+        invalidate()
         handler.removeCallbacks(clearFlashRunnable)
         handler.postDelayed(clearFlashRunnable, FLASH_MS)
     }
@@ -259,6 +268,73 @@ class CodeEditorView @JvmOverloads constructor(
         flashLineStart = -1
         flashLineEnd = -1
         applyDiagnostics(currentError)
+        invalidate()
+    }
+
+    // ---------- 跳转高亮：字段名实色底（自绘） ----------
+
+    private val flashPaint = android.graphics.Paint().apply {
+        isAntiAlias = true
+        style = android.graphics.Paint.Style.FILL
+    }
+    private val flashRect = android.graphics.RectF()
+
+    /**
+     * 在编辑器完成绘制后，把跳转目标（字段名/值）压一层实色底。
+     *
+     * 位置从 [getLayout] 拿：先按字符下标算出行号与列号，再 `getCharLayoutOffset(line, column)`
+     * 换成相对整篇内容的 `[x, y]`，最后减去滚动偏移。这样软换行成多行时也能逐行画对。
+     */
+    override fun onDraw(canvas: android.graphics.Canvas) {
+        super.onDraw(canvas)
+        if (flashStart < 0 || flashEnd <= flashStart) return
+        val content = getText()
+        val len = content.length
+        if (len == 0) return
+        val s = flashStart.coerceIn(0, len - 1)
+        val e = flashEnd.coerceIn(s + 1, len)
+        // Layout 可能还没就绪（首次布局中），拿不到就静默跳过，不抛异常打断主流程
+        val layout = runCatching { getLayout() }.getOrNull() ?: return
+        val indexer = content.getIndexer()
+
+        val startPos = indexer.getCharPosition(s)
+        val endPos = indexer.getCharPosition(e)
+
+        flashPaint.color = getColorScheme().getColor(EditorColorScheme.STATIC_SPAN_BACKGROUND)
+
+        val offsetX = getOffsetX()
+        val offsetY = getOffsetY()
+        val radius = getDpUnit() * 2f
+        val padX = getDpUnit() * 1.5f
+        val padY = getDpUnit() * 0.5f
+
+        // 只扫可视行：跳转后目标一定在屏上，无需遍历全文
+        val firstRow = getFirstVisibleRow()
+        val lastRow = getLastVisibleRow()
+        for (rowIndex in firstRow..lastRow) {
+            val row = runCatching { layout.getRowAt(rowIndex) }.getOrNull() ?: continue
+            val line = row.lineIndex
+            if (line < startPos.line || line > endPos.line) continue
+
+            val colFrom = maxOf(if (line == startPos.line) startPos.column else 0, row.startColumn)
+            val colTo = minOf(
+                if (line == endPos.line) endPos.column else content.getColumnCount(line),
+                row.endColumn
+            )
+            if (colTo <= colFrom) continue
+
+            val from = runCatching { layout.getCharLayoutOffset(line, colFrom) }.getOrNull() ?: continue
+            val to = runCatching { layout.getCharLayoutOffset(line, colTo) }.getOrNull() ?: continue
+            flashRect.set(
+                from[0] - offsetX - padX,
+                from[1] - offsetY + padY,
+                to[0] - offsetX + padX,
+                to[1] - offsetY - padY
+            )
+            if (flashRect.right > 0f && flashRect.left < width) {
+                canvas.drawRoundRect(flashRect, radius, radius, flashPaint)
+            }
+        }
     }
 
     // ---------- 错误与搜索高亮 ----------
@@ -472,22 +548,13 @@ class CodeEditorView @JvmOverloads constructor(
                     }
                 }
             }
-            // 跳转高亮：整行浅底（TYPO）+ 字段名实色底（NONE，不带波浪线）
+            // 跳转高亮只下发「整行浅底」；字段名实色底由 onDraw 自绘（诊断区画不出背景块）
             if (flashLineStart >= 0 && flashLineEnd > flashLineStart) {
                 container.addDiagnostic(
                     DiagnosticRegion(
                         flashLineStart.coerceIn(0, len),
                         flashLineEnd.coerceIn(0, len),
                         DiagnosticRegion.SEVERITY_TYPO
-                    )
-                )
-            }
-            if (flashStart >= 0 && flashEnd > flashStart) {
-                container.addDiagnostic(
-                    DiagnosticRegion(
-                        flashStart.coerceIn(0, len),
-                        flashEnd.coerceIn(0, len),
-                        DiagnosticRegion.SEVERITY_NONE
                     )
                 )
             }
