@@ -6,7 +6,6 @@ import io.github.rosemoe.sora.lang.analysis.AnalyzeManager
 import io.github.rosemoe.sora.lang.analysis.StyleReceiver
 import io.github.rosemoe.sora.lang.brackets.BracketsProvider
 import io.github.rosemoe.sora.lang.completion.CompletionPublisher
-import io.github.rosemoe.sora.lang.diagnostic.DiagnosticsContainer
 import io.github.rosemoe.sora.lang.format.Formatter
 import io.github.rosemoe.sora.lang.smartEnter.NewlineHandler
 import io.github.rosemoe.sora.lang.styling.MappedSpans
@@ -26,6 +25,21 @@ private const val PRIORITY_TOKEN = 0
 
 /** 跳转高亮在行内的优先级（同列时压过语法 token） */
 private const val PRIORITY_FLASH = 1
+
+/**
+ * 超过这个长度的行**不再逐 token 着色**（整行只留默认文字色）。
+ *
+ * 压缩过的 JSON 常常是「一行几十万字符」，这种行逐 token 会产出上万个 span。
+ * 而 Sora 断行/绘制时是**按 span 分段去量文本宽度**的（`GraphicTextRow` + `TextRegionIterator`），
+ * span 越多，`WordwrapLayout` 每次重排整行的固定开销就越大 ——
+ * 直接表现就是软换行下打字、删字、移动光标都发涩。
+ *
+ * 一行超过四千字符时，屏幕上本来也只看得见其中一小段，着色收益为零，索性整行用默认色。
+ */
+private const val COLORLESS_LINE_CHARS = 4_000
+
+/** 该长度（列数）的行是否还逐 token 着色；0 列和超长行都不着色 */
+internal fun shouldColorLine(columns: Int): Boolean = columns in 1..COLORLESS_LINE_CHARS
 
 /** 语法着色种类，映射到编辑器配色方案里的颜色槽位 */
 enum class TokenKind { KEY, STRING, NUMBER, LITERAL, PUNCT }
@@ -153,6 +167,7 @@ class JsonSpansLanguage(
                 cache = arrayOfNulls(lineCountOf())
             }
             dispatch()
+            dispatchBrackets()
         }
 
         override fun insert(start: CharPosition, end: CharPosition, insertedContent: CharSequence) {
@@ -215,7 +230,17 @@ class JsonSpansLanguage(
                 return
             } ?: return
             r.setStyles(this, styles)
-            r.setDiagnostics(this, DiagnosticsContainer())
+        }
+
+        /**
+         * 只在换文档/重建时下发一次「空括号配对」。
+         *
+         * 这里**不碰诊断**：语法错误标记由 `CodeEditorView.applyDiagnostics()` 负责。
+         * 早前 `dispatch()` 每次按键都会 `setDiagnostics(空容器)`，
+         * 结果是一打字红色错误标记就被清掉，而且每次按键都白创建一个对象。
+         */
+        private fun dispatchBrackets() {
+            val r = receiver ?: return
             r.updateBracketProvider(this, BracketsProvider { _, _ -> null })
         }
 
@@ -326,13 +351,28 @@ class JsonSpansLanguage(
             return out
         }
 
+        /**
+         * 取一行的 token。
+         *
+         * 两点性能约束：
+         * - 超长行直接返回空（见 [COLORLESS_LINE_CHARS]）：压缩 JSON 动辄一行几百 KB，
+         *   逐 token 会产生上万个 span，把 Sora 的断行/绘制拖垮；
+         * - 用 `ContentLine`（它本身是 `CharSequence`）而不是 `getLineString()`：
+         *   后者每次都把整行复制成一个新 `String`，一行 500KB 就是每次输入多一次 500KB 分配。
+         */
         private fun scanLine(c: Content, line: Int): ArrayList<Token> {
-            val text = try {
-                c.getLineString(line)
+            val cols = try {
+                c.getColumnCount(line)
             } catch (e: Throwable) {
                 return ArrayList(0)
             }
-            return scan(text)
+            if (!shouldColorLine(cols)) return ArrayList(0)
+            val seq = try {
+                c.getLine(line)
+            } catch (e: Throwable) {
+                return ArrayList(0)
+            }
+            return scan(seq)
         }
     }
 
@@ -354,7 +394,7 @@ class JsonSpansLanguage(
         return TextStyle.makeStyle(colorId)
     }
 
-    private fun scan(line: String): ArrayList<Token> = scanLine(line, maxTokensPerLine)
+    private fun scan(line: CharSequence): ArrayList<Token> = scanLine(line, maxTokensPerLine)
 
     companion object {
     /**
@@ -373,8 +413,12 @@ class JsonSpansLanguage(
     /** 用于在高亮结束处把背景「关掉」（只设前景色，背景 0 = 透明） */
     val RESTORE_STYLE: Long = TextStyle.makeStyle(ColorIds.FLASH_TEXT)
 
-    /** 单行分词：规则与旧的 JsonHighlighter 一致（键 = 紧跟冒号的字符串） */
-    fun scanLine(line: String, maxTokens: Int = 4096): ArrayList<Token> {
+    /**
+     * 单行分词：规则与旧的 JsonHighlighter 一致（键 = 紧跟冒号的字符串）。
+     *
+     * 参数用 `CharSequence` 是为了能直接扫 `ContentLine`，省掉一次整行复制。
+     */
+    fun scanLine(line: CharSequence, maxTokens: Int = 4096): ArrayList<Token> {
         val out = ArrayList<Token>(16)
         val n = line.length
         var i = 0
@@ -417,15 +461,15 @@ class JsonSpansLanguage(
                     out.add(Token(i, i + 1, TokenKind.PUNCT))
                     i++
                 }
-                line.startsWith("true", i) -> {
+                startsWithAt(line, i, "true") -> {
                     out.add(Token(i, i + 4, TokenKind.LITERAL))
                     i += 4
                 }
-                line.startsWith("false", i) -> {
+                startsWithAt(line, i, "false") -> {
                     out.add(Token(i, i + 5, TokenKind.LITERAL))
                     i += 5
                 }
-                line.startsWith("null", i) -> {
+                startsWithAt(line, i, "null") -> {
                     out.add(Token(i, i + 4, TokenKind.LITERAL))
                     i += 4
                 }
@@ -433,6 +477,15 @@ class JsonSpansLanguage(
             }
         }
         return out
+    }
+
+    /** `CharSequence` 没有 `startsWith(prefix, offset)`，这里补一个等价的 */
+    private fun startsWithAt(seq: CharSequence, offset: Int, prefix: String): Boolean {
+        if (offset + prefix.length > seq.length) return false
+        for (i in prefix.indices) {
+            if (seq[offset + i] != prefix[i]) return false
+        }
+        return true
     }
     }
 

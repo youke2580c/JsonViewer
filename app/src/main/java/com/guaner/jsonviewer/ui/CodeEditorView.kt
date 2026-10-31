@@ -10,12 +10,10 @@ import android.view.MotionEvent
 import android.view.ViewConfiguration
 import com.guaner.jsonviewer.editor.JsonEditorTheme
 import com.guaner.jsonviewer.editor.JsonSpansLanguage
-import io.github.rosemoe.sora.text.Content
 import com.guaner.jsonviewer.data.AppSettings
 import com.guaner.jsonviewer.json.JsonError
 import com.guaner.jsonviewer.json.JsonLimits
 import com.guaner.jsonviewer.theme.ThemeColors
-import com.guaner.jsonviewer.text.LineStarts
 import com.guaner.jsonviewer.theme.ThemeManager
 import io.github.rosemoe.sora.event.ContentChangeEvent
 import io.github.rosemoe.sora.lang.diagnostic.DiagnosticRegion
@@ -50,14 +48,8 @@ class CodeEditorView @JvmOverloads constructor(
     /** 用户设置的换行 */
     private var userWrap = ThemeManager.codeWrap
 
-    /** 因超长单行临时开启的换行（内容变短后自动恢复用户设置） */
-    private var autoWrapped = false
-
     /** 业务侧是否允许编辑（值为 null 时锁住），与设置开关相互独立 */
     private var isEnabledForUser = true
-
-    /** 因超长行自动开启换行时回调一次（用于提示用户） */
-    var onAutoWrap: (() -> Unit)? = null
 
     /** 文本变化回调（用户输入与代码设置都会触发） */
     var onTextChanged: (() -> Unit)? = null
@@ -114,9 +106,15 @@ class CodeEditorView @JvmOverloads constructor(
             // 整段替换（导入/格式化/恢复）由调用方自己控制提示，这里只关心用户编辑
             if (suppressCallback) return@subscribeEvent
             if (event.action == ContentChangeEvent.ACTION_SET_NEW_TEXT) return@subscribeEvent
-            // 每次编辑都检测一次「是否出现超长行」：粘贴一整段无换行的文本时，
-            // 之前只有 setText() 才检测，用户手动粘贴根本不会触发，于是换行永远不生效
-            maybeAutoWrapForLongLine(edited = true)
+            // 这里**绝不能调用 setWordwrap**：它会重建整个 layout，Sora 在重建期间把
+            // layoutBusy 置位，点击只记坐标、不落光标（positionNotApplied），
+            // 表现就是「正在判断自动换行、光标放不下去、打不了字」。
+            // 换行只在「换文档 / 改设置」时定一次，输入路径上一次都不碰。
+            //
+            // 软换行下删除字符会让断点整体前移，Sora 的断点跟着改，
+            // 但光标矩形要等这一帧画完才准；快速连删时看起来就是「光标和文字对不上」。
+            // 补一帧重绘让它立刻跟上，代价只有一次绘制。
+            if (isWordwrap) postInvalidateOnAnimation()
             onTextChanged?.invoke()
             // 每次编辑都可能让撤销栈从「空」变「非空」，顺手同步按钮可用态
             dispatchUndoState()
@@ -174,6 +172,10 @@ class CodeEditorView @JvmOverloads constructor(
      * [forceTop] = true 时回到顶部；false 用于「恢复上次内容」，保持光标在 0 但不强制滚动。
      */
     fun setTextProgrammatic(value: String, forceTop: Boolean = true) {
+        // **先定换行，再换内容**：`setText()` 内部会按当前 `wordwrap` 直接建布局。
+        // 顺序反了就是「先建 LineBreakLayout、再重建 WordwrapLayout」，
+        // 几十万字符的文档要白白多断一次行，还多一次 layoutBusy 空窗。
+        if (isWordwrap != userWrap) setWordwrap(userWrap, false)
         suppressCallback = true
         try {
             setText(value)
@@ -181,8 +183,6 @@ class CodeEditorView @JvmOverloads constructor(
             suppressCallback = false
         }
         oversizeWarned = getText().length > JsonLimits.MAX_INPUT_CHARS
-        // 导入 / 恢复是一次性动作，这里可以放心全量扫一遍最长行
-        maybeAutoWrapForLongLine(edited = false)
         if (forceTop) {
             setCursorOffset(0)
             post { scrollTo(0, 0) }
@@ -197,59 +197,6 @@ class CodeEditorView @JvmOverloads constructor(
         onTextChanged?.invoke()
         // 换了一整篇内容，撤销栈已被重置，按钮可用态要跟着变
         dispatchUndoState()
-    }
-
-    /**
-     * 检测是否需要为「超长单行」临时开启软换行。
-     *
-     * 参数 [edited]：
-     * - `false`（整篇替换）：直接全量扫最长行，一次 O(n) 可以接受
-     * - `true`（用户编辑/粘贴）：**只检查本次编辑影响的行**，绝不全量扫描。
-     *   否则粘贴 500KB 文本后，每敲一个键都扫一遍全文，主线程直接卡死。
-     *
-     * 之前这里只在 `setText()` 里检测，导致用户手动粘贴的长文本永远触发不到换行，
-     * 于是一整行几十万字符挤在一行里显示、横向排版每帧都要从头累加像素宽度 → 左右滑动卡死。
-     */
-    private fun maybeAutoWrapForLongLine(edited: Boolean) {
-        val content = getText()
-        val len = content.length
-        if (len == 0) {
-            if (autoWrapped) {
-                autoWrapped = false
-                setWordwrap(userWrap, true)
-            }
-            return
-        }
-        val longest = if (edited) {
-            maxLineLengthAroundCursor(content)
-        } else {
-            LineStarts.maxLineLength(content)
-        }
-        if (longest > SUPER_LONG_LINE_CHARS) {
-            if (!autoWrapped) {
-                autoWrapped = true
-                setWordwrap(true, true)
-                onAutoWrap?.invoke()
-            }
-        } else if (autoWrapped && longest <= SUPER_LONG_LINE_RELEASE) {
-            autoWrapped = false
-            setWordwrap(userWrap, true)
-        }
-    }
-
-    /**
-     * 只看光标附近某一行附近的最长行，O(行数) 而不是 O(全文)。
-     *
-     * 粘贴/输入只可能影响光标所在的那一行（或粘贴内容跨的几行），
-     * 检查它以当前行附近为主即可；跨多行的巨块粘贴由 [setTextProgrammatic] 全量兜底。
-     */
-    private fun maxLineLengthAroundCursor(content: Content): Int {
-        val cursor = runCatching { getCursor() }.getOrNull() ?: return 0
-        return LineStarts.maxLineLengthAround(
-            line = cursor.leftLine,
-            lineCount = content.lineCount,
-            radius = SCAN_AROUND_LINES
-        ) { i -> runCatching { content.getColumnCount(i) }.getOrDefault(0) }
     }
 
     /** 置顶：滚到第一行 */
@@ -555,6 +502,10 @@ class CodeEditorView @JvmOverloads constructor(
             overScrollEnabled = AppSettings.editorOverScroll
             // 允许「只朝一个方向」的惯性滑动：横向内容长时，斜着滑也不会被纵向拖动卡住
             singleDirectionFling = true
+            singleDirectionDragging = true
+            // 长行渲染缓存：不换行的超长行整行绘制结果会被缓存成 RenderNode，
+            // 滚动/重绘不再逐字重量。这是超长行「不换行也能滑得动」的关键。
+            cacheRenderNodeForLongLines = true
             highlightMatchingDelimiters = AppSettings.editorHighlightBrackets
         }
     }
@@ -569,22 +520,29 @@ class CodeEditorView @JvmOverloads constructor(
     fun applyThemeFromManager() {
         themeColors = ThemeManager.activeColors
         currentScale = ThemeManager.codeScale
-        val tf = ThemeManager.resolveTypeface()
-        setTypefaceText(tf)
-        setTypefaceLineNumber(tf)
+        // 字体和字号只在**真的变了**时才写：Sora 的 setTextSizePx() 内部会 createLayout()，
+        // 也就是把整篇重新排版一次。原来每次 onResume / 切主题都无条件写一遍，
+        // 几十万字符的文档就白白重排一次 —— 这一下正好卡在用户回到界面的瞬间。
+        setTypeface(ThemeManager.resolveTypeface())
         setColorScheme(JsonEditorTheme.schemeOf(themeColors))
         setBackgroundColor(themeColors.background)
         applyFontSize((ThemeManager.codeFontSize * currentScale).coerceIn(8f, 40f))
         userWrap = ThemeManager.codeWrap
-        setWordwrap(userWrap, true)
+        setWordwrap(userWrap, false)
         applyEditorOptions()
         applyDiagnostics(currentError)
     }
+
+    /** 已写入 Sora 的字号（px），用来跳过无变化的重复设置 */
+    private var appliedTextSizePx = 0f
 
     private fun applyFontSize(sp: Float) {
         val px = TypedValue.applyDimension(
             TypedValue.COMPLEX_UNIT_SP, sp, resources.displayMetrics
         )
+        // 差 0.05px 视为没变：这是排版层面的差别，肉眼与布局都不受影响
+        if (abs(px - appliedTextSizePx) < 0.05f) return
+        appliedTextSizePx = px
         setTextSizePx(px)
     }
 
@@ -599,14 +557,22 @@ class CodeEditorView @JvmOverloads constructor(
         }
     }
 
-    fun setFont(tf: Typeface) {
+    /** 已写入 Sora 的字体，用来跳过无变化的重复设置（避免多余的 requestLayout） */
+    private var appliedTypeface: Typeface? = null
+
+    /** 设置正文字体与行号字体；同一个字体对象重复调用直接忽略 */
+    fun setTypeface(tf: Typeface) {
+        if (tf === appliedTypeface) return
+        appliedTypeface = tf
         setTypefaceText(tf)
         setTypefaceLineNumber(tf)
     }
 
+    fun setFont(tf: Typeface) = setTypeface(tf)
+
     fun setWrap(wrap: Boolean) {
         userWrap = wrap
-        if (!autoWrapped) setWordwrap(wrap, true)
+        setWordwrap(wrap, false)
     }
 
     // ---------- 双指缩放（Sora 默认不支持，这里补上） ----------
@@ -798,15 +764,6 @@ class CodeEditorView @JvmOverloads constructor(
 
         /** 定位闪烁高亮的持续时间 */
         const val FLASH_MS = 1_600L
-
-        /** 单行超过该长度时临时开启软换行（避免一屏排成几十万像素的一行） */
-        const val SUPER_LONG_LINE_CHARS = 20_000
-
-        /** 最长行降到该长度以下才恢复用户的换行设置（滞回，避免临界值反复切换） */
-        const val SUPER_LONG_LINE_RELEASE = 10_000
-
-        /** 用户编辑后检查超长行时，只看光标前后各几行（避免每次按键扫全文） */
-        const val SCAN_AROUND_LINES = 3
 
         /** 判定「点在滚动条上」的横向容差（dp）；滚动条本身更窄，留点余量好按 */
         const val SCROLL_BAR_TOUCH_DP = 22f

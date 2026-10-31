@@ -68,46 +68,12 @@ class LargeTextBudgetTest {
         assertTrue("最长行应至少包含尾部", max >= "no newline tail".length)
     }
 
-    /**
-     * 用户编辑后只允许扫光标附近，**不能**为了判断超长行去遍历全文。
-     *
-     * 这条是「粘贴 500KB 文本后每敲一个键都卡」的回归测试：
-     * 断言访问次数局限在 2*radius+1 行内，一旦有人把实现改回全量扫描，这里立刻失败。
-     */
-    @Test
-    fun maxLineLengthAroundOnlyTouchesNearbyLines() {
-        val lineCount = 500_000
-        var visited = 0
-        val max = LineStarts.maxLineLengthAround(line = 250_000, lineCount = lineCount, radius = 3) { i ->
-            visited++
-            if (i == 250_001) 999_999 else 10
-        }
-        assertEquals("只看前后各 3 行", 7, visited)
-        assertEquals(999_999, max)
-    }
-
-    @Test
-    fun maxLineLengthAroundClampsAtEdges() {
-        // 光标在第 0 行：不能越界到负数
-        val a = LineStarts.maxLineLengthAround(0, 10, 3) { it + 1 }
-        assertEquals(4, a)
-        // 光标在最后一行
-        val b = LineStarts.maxLineLengthAround(9, 10, 3) { it + 1 }
-        assertEquals(10, b)
-        // 空文本
-        assertEquals(0, LineStarts.maxLineLengthAround(0, 0, 3) { 100 })
-    }
-
-    /**
-     * 粘贴的超长单行必须能被识别出来 —— 否则软换行不启用，整行横向排版会让滚动/编辑卡死。
-     */
+    /** 单行几十万字符的文本，最长行必须量得准（用于判断「是不是压缩成一行了」） */
     @Test
     fun detectsPastedVeryLongSingleLine() {
         val sb = StringBuilder()
         repeat(60_000) { sb.append('a') }
         val text = sb.toString()
-        // 全文只有一行，光标自然也在这一行
         assertEquals(60_000, LineStarts.maxLineLength(text))
-        assertTrue(LineStarts.maxLineLengthAround(0, 1, 3) { text.length } > 20_000)
     }
 }

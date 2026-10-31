@@ -147,6 +147,33 @@ class JsonSpansLanguageTest {
     }
 
     @Test
+    fun `very long line is not colored token by token`() {
+        // 压缩 JSON 常是一行几十万字符：这种行再逐 token 下发上万个 span，
+        // Sora 断行/绘制会按 span 分段量宽度，软换行下打字和删字都会发涩。
+        assertFalse(shouldColorLine(0))
+        assertTrue(shouldColorLine(1))
+        assertTrue(shouldColorLine(4_000))
+        assertFalse(shouldColorLine(4_001))
+        assertFalse(shouldColorLine(500_000))
+    }
+
+    @Test
+    fun `scan works on plain char sequence`() {
+        // 分析器直接扫 ContentLine（CharSequence），不再复制成 String；
+        // 这条覆盖 CharSequence 路径上的字面量识别（没有 startsWith 可用）
+        val line = StringBuilder("""{"a": true,"b": false,"c": null}""")
+        val kinds = JsonSpansLanguage.scanLine(line).map { it.kind }
+        assertEquals(
+            listOf(
+                TokenKind.PUNCT, TokenKind.KEY, TokenKind.PUNCT, TokenKind.LITERAL, TokenKind.PUNCT,
+                TokenKind.KEY, TokenKind.PUNCT, TokenKind.LITERAL, TokenKind.PUNCT,
+                TokenKind.KEY, TokenKind.PUNCT, TokenKind.LITERAL, TokenKind.PUNCT
+            ),
+            kinds
+        )
+    }
+
+    @Test
     fun `flash styles do not set accidental text decorations`() {
         // 背景色一旦写错位就会点亮 STRIKETHROUGH，出现「莫名删除线」
         assertFalse(TextStyle.isStrikeThrough(JsonSpansLanguage.FLASH_LINE_STYLE))

@@ -582,10 +582,6 @@ class MainActivity : AppCompatActivity() {
         binding.editorView.onOversize = { len ->
             toast("内容已达 ${JsonLimits.formatChars(len)}，超出安全上限，语法高亮已自动关闭")
         }
-        // 存在超长行（几万字符的值）时自动换成软换行，否则单行绘制会让滚动卡死
-        binding.editorView.onAutoWrap = {
-            toast("检测到超长行，已自动换行以保证滚动流畅")
-        }
         // 撤销栈变化 → 底栏「撤销 / 重做」的可用态跟着变（不可用时压暗）
         binding.editorView.onUndoStateChanged = { canUndo, canRedo ->
             refreshUndoButtons(canUndo, canRedo)

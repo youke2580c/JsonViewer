@@ -40,27 +40,6 @@ object LineStarts {
         return if (tail > max) tail else max
     }
 
-    /**
-     * 只统计 [line] 前后 [radius] 行内的最长行长度。
-     *
-     * 用途：用户编辑/粘贴后判断「是否出现超长行需要临时换行」。
-     * 这种情况下**绝不能全量扫**——500KB 文本每敲一个键扫一遍全文，主线程直接卡死。
-     *
-     * @param lineCount 总行数
-     * @param lineLengthAt 第 i 行的列数
-     */
-    fun maxLineLengthAround(line: Int, lineCount: Int, radius: Int, lineLengthAt: (Int) -> Int): Int {
-        if (lineCount <= 0) return 0
-        val center = line.coerceIn(0, lineCount - 1)
-        val lo = (center - radius).coerceAtLeast(0)
-        val hi = (center + radius).coerceAtMost(lineCount - 1)
-        var max = 0
-        for (i in lo..hi) {
-            val l = lineLengthAt(i)
-            if (l > max) max = l
-        }
-        return max
-    }
 
     /**
      * 局部平移：[starts] 是变化前的行首表，本次在 [changeStart] 处删掉 [before] 个字符、
