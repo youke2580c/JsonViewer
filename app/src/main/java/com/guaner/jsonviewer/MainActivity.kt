@@ -233,6 +233,8 @@ class MainActivity : AppCompatActivity() {
         // 设置页可能改过按钮顺序 / 快捷跳转开关 / 大纲滑出方向，回来时同步一次
         applyBottomOrder()
         applyOutlineSide()
+        // 搜索栏的 Aa / .* / 替换开关可能在设置页被关掉，回来时重新按设置铺一遍
+        applySearchOptions()
         if (mode == Mode.FORM) {
             binding.quickJumpScroll.isVisible =
                 AppSettings.showQuickJump && binding.quickJumpRow.childCount > 0
@@ -526,6 +528,8 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+        // 代码搜索栏第二/三行（Aa / .* / 替换）的颜色由 styleSearchToggles 统一处理
+        if (row === binding.searchRowCode) styleSearchToggles()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -1008,6 +1012,12 @@ class MainActivity : AppCompatActivity() {
         binding.searchNextCode.setOnClickListener { codeSearchNext() }
         binding.searchPrevCode.setOnClickListener { codeSearchPrev() }
         binding.searchCloseCode.setOnClickListener { closeCodeSearch() }
+        setupSearchToggles()
+        // 替换输入框回车 = 替换当前命中
+        binding.searchReplaceInput.setOnEditorActionListener { _, _, _ ->
+            doReplaceCurrent()
+            true
+        }
 
         binding.searchInputForm.addTextChangedListener(afterTextChanged = { runTreeSearch() })
         binding.searchInputForm.setOnEditorActionListener { _, _, _ ->
@@ -1022,7 +1032,9 @@ class MainActivity : AppCompatActivity() {
         // 输入法保持弹出，可以连续输入
         listOf(
             binding.searchPrevCode, binding.searchNextCode, binding.searchCloseCode,
-            binding.searchPrevForm, binding.searchNextForm, binding.searchCloseForm
+            binding.searchPrevForm, binding.searchNextForm, binding.searchCloseForm,
+            binding.searchCaseToggle, binding.searchRegexToggle, binding.searchReplaceToggle,
+            binding.searchReplaceOne, binding.searchReplaceAll
         ).forEach {
             it.isFocusable = false
             it.isFocusableInTouchMode = false
@@ -1480,9 +1492,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ---------- 代码模式搜索 ----------
+    // ---------- 代码模式搜索（Sora EditorSearcher） ----------
 
     private var codeSearchJob: Job? = null
+
+    /** 是否走 Sora 原生搜索（关掉后退回旧的纯文本扫描） */
+    private var useSoraSearch = true
 
     /** 搜索输入防抖：连续打字只跑最后一次，避免每敲一个字就全量扫描 + 视图跳动 */
     private fun scheduleCodeSearch() {
@@ -1499,10 +1514,33 @@ class MainActivity : AppCompatActivity() {
             codeMatches = emptyList()
             codeMatchIndex = -1
             binding.searchCountCode.text = "0/0"
-            binding.editorView.setSearchMatches(emptyList(), -1)
+            binding.editorView.stopSearch()
             return
         }
-        // 用 CharSequence 直接扫描，避免每次按键把 200KB 文本 toString 全量拷贝
+        if (useSoraSearch) {
+            runSoraSearch(q)
+        } else {
+            runPlainSearch(q)
+        }
+    }
+
+    /** Sora 原生搜索：支持正则，高亮与「当前命中」由编辑器自己维护 */
+    private fun runSoraSearch(q: String) {
+        val regex = binding.searchRegexToggle.isSelected
+        val caseSensitive = binding.searchCaseToggle.isSelected
+        val ok = binding.editorView.searchWithSora(q, regex, caseSensitive) { count ->
+            if (isFinishing || isDestroyed) return@searchWithSora
+            if (count <= 0) {
+                binding.searchCountCode.text = if (regex) "无匹配" else "0/0"
+            } else {
+                binding.searchCountCode.text = "${binding.editorView.searchMatchIndex() + 1}/$count"
+            }
+        }
+        if (!ok) toast("正则表达式有误，已按普通文本搜索")
+    }
+
+    /** 关闭 Sora 搜索时的旧路径：纯文本 + 忽略大小写 */
+    private fun runPlainSearch(q: String) {
         val text = binding.editorView.textSequence
         val matches = ArrayList<IntRange>()
         var idx = text.indexOf(q, ignoreCase = true)
@@ -1514,7 +1552,6 @@ class MainActivity : AppCompatActivity() {
         codeMatchIndex = if (matches.isEmpty()) -1 else 0
         updateCodeSearchLabel()
         binding.editorView.setSearchMatches(matches, codeMatchIndex)
-        // takeFocus=false：只滚动定位，不把焦点从搜索框抢走，否则输入一个字就断
         if (codeMatchIndex >= 0) binding.editorView.jumpTo(matches[0].first, takeFocus = false)
     }
 
@@ -1527,6 +1564,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun codeSearchNext() {
+        if (useSoraSearch) {
+            if (binding.editorView.searchNext()) {
+                val i = binding.editorView.searchMatchIndex()
+                val n = binding.editorView.searchMatchCount()
+                binding.searchCountCode.text = if (n > 0) "${i + 1}/$n" else "0/0"
+            }
+            return
+        }
         if (codeMatches.isEmpty()) return
         codeMatchIndex = (codeMatchIndex + 1) % codeMatches.size
         updateCodeSearchLabel()
@@ -1535,6 +1580,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun codeSearchPrev() {
+        if (useSoraSearch) {
+            if (binding.editorView.searchPrevious()) {
+                val i = binding.editorView.searchMatchIndex()
+                val n = binding.editorView.searchMatchCount()
+                binding.searchCountCode.text = if (n > 0) "${i + 1}/$n" else "0/0"
+            }
+            return
+        }
         if (codeMatches.isEmpty()) return
         codeMatchIndex = (codeMatchIndex - 1 + codeMatches.size) % codeMatches.size
         updateCodeSearchLabel()
@@ -1544,8 +1597,126 @@ class MainActivity : AppCompatActivity() {
 
     private fun closeCodeSearch() {
         binding.searchInputCode.setText("")
+        binding.searchReplaceInput.setText("")
         binding.searchRowCode.isVisible = false
-        binding.editorView.setSearchMatches(emptyList(), -1)
+        binding.editorView.stopSearch()
+    }
+
+    // ---------- 搜索选项（Aa / .* / 替换） ----------
+
+    /** 按设置决定显示哪些搜索能力，并恢复上次的选项状态 */
+    private fun applySearchOptions() {
+        val enabled = AppSettings.editorSearch
+        useSoraSearch = enabled
+        with(binding) {
+            searchOptionsRow.isVisible = enabled &&
+                (AppSettings.editorSearchCase || AppSettings.editorSearchRegex || AppSettings.editorSearchReplace)
+            searchCaseToggle.isVisible = enabled && AppSettings.editorSearchCase
+            searchRegexToggle.isVisible = enabled && AppSettings.editorSearchRegex
+            searchReplaceToggle.isVisible = enabled && AppSettings.editorSearchReplace
+
+            // 恢复上次的勾选状态
+            searchCaseToggle.isSelected = AppSettings.editorSearchCaseLast
+            searchRegexToggle.isSelected = AppSettings.editorSearchRegexLast
+            if (!searchReplaceToggle.isVisible) {
+                searchReplaceRow.isVisible = false
+                searchReplaceToggle.isSelected = false
+            }
+            styleSearchToggles()
+        }
+    }
+
+    /** Aa / .* / 替换三个按钮的选中态配色：选中用强调色 + 淡底，未选中用次要文字色 */
+    private fun styleSearchToggles() {
+        val colors = ThemeManager.activeColors
+        val accent = colors.accent
+        val idle = colors.gutterText
+        val density = resources.displayMetrics.density
+        listOf(binding.searchCaseToggle, binding.searchRegexToggle, binding.searchReplaceToggle)
+            .forEach { tv ->
+                val on = tv.isSelected
+                tv.setTextColor(if (on) accent else idle)
+                tv.background = android.graphics.drawable.GradientDrawable().apply {
+                    cornerRadius = 6 * density
+                    setColor(if (on) ThemeManager.mix(colors.gutter, accent, 0.18f) else android.graphics.Color.TRANSPARENT)
+                }
+            }
+        listOf(binding.searchReplaceOne, binding.searchReplaceAll).forEach {
+            it.setTextColor(accent)
+        }
+        binding.searchReplaceInput.setTextColor(colors.text)
+        binding.searchReplaceInput.setHintTextColor(colors.gutterText)
+    }
+
+    private fun setupSearchToggles() {
+        applySearchOptions()
+        binding.searchCaseToggle.setOnClickListener {
+            val v = !it.isSelected
+            it.isSelected = v
+            AppSettings.editorSearchCaseLast = v
+            styleSearchToggles()
+            scheduleCodeSearch()
+        }
+        binding.searchRegexToggle.setOnClickListener {
+            val v = !it.isSelected
+            it.isSelected = v
+            AppSettings.editorSearchRegexLast = v
+            styleSearchToggles()
+            scheduleCodeSearch()
+        }
+        binding.searchReplaceToggle.setOnClickListener {
+            val v = !it.isSelected
+            it.isSelected = v
+            binding.searchReplaceRow.isVisible = v
+            styleSearchToggles()
+            if (v) {
+                binding.searchReplaceInput.requestFocus()
+                showKeyboard(binding.searchReplaceInput)
+            }
+        }
+        binding.searchReplaceOne.setOnClickListener { doReplaceCurrent() }
+        binding.searchReplaceAll.setOnClickListener { doReplaceAll() }
+    }
+
+    /** 替换当前命中；替换后内容变了要重新解析并重新搜索 */
+    private fun doReplaceCurrent() {
+        if (!useSoraSearch) {
+            toast("当前搜索模式不支持替换，请在设置里开启搜索栏")
+            return
+        }
+        val q = binding.searchInputCode.text?.toString().orEmpty()
+        if (q.isEmpty()) return
+        if (binding.editorView.searchMatchCount() <= 0) {
+            toast("没有可替换的匹配")
+            return
+        }
+        val replacement = binding.searchReplaceInput.text?.toString().orEmpty()
+        binding.editorView.replaceCurrent(replacement)
+        // 替换后匹配位置全部偏移，等编辑器处理完再重跑一次
+        lifecycleScope.launch {
+            delay(80)
+            runCodeSearch()
+        }
+    }
+
+    private fun doReplaceAll() {
+        if (!useSoraSearch) {
+            toast("当前搜索模式不支持替换，请在设置里开启搜索栏")
+            return
+        }
+        val q = binding.searchInputCode.text?.toString().orEmpty()
+        if (q.isEmpty()) return
+        val total = binding.editorView.searchMatchCount()
+        if (total <= 0) {
+            toast("没有可替换的匹配")
+            return
+        }
+        val replacement = binding.searchReplaceInput.text?.toString().orEmpty()
+        binding.editorView.replaceAllMatches(replacement) { n ->
+            if (isFinishing || isDestroyed) return@replaceAllMatches
+            toast("已替换 ${if (n > 0) n else total} 处")
+            binding.searchCountCode.text = "0/0"
+        }
     }
 
     // ---------- 表单模式搜索（定位到命中节点所在层） ----------
@@ -1939,6 +2110,7 @@ class MainActivity : AppCompatActivity() {
             val show = !binding.searchRowCode.isVisible
             binding.searchRowCode.isVisible = show
             if (show) {
+                applySearchOptions()
                 binding.searchInputCode.requestFocus()
                 showKeyboard(binding.searchInputCode)
             }

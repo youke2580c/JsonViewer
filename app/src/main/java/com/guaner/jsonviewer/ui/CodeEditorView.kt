@@ -11,6 +11,7 @@ import android.view.ViewConfiguration
 import com.guaner.jsonviewer.editor.JsonEditorTheme
 import com.guaner.jsonviewer.editor.JsonSpansLanguage
 import io.github.rosemoe.sora.text.Content
+import com.guaner.jsonviewer.data.AppSettings
 import com.guaner.jsonviewer.json.JsonError
 import com.guaner.jsonviewer.json.JsonLimits
 import com.guaner.jsonviewer.theme.ThemeColors
@@ -20,6 +21,7 @@ import io.github.rosemoe.sora.event.ContentChangeEvent
 import io.github.rosemoe.sora.lang.diagnostic.DiagnosticRegion
 import io.github.rosemoe.sora.lang.diagnostic.DiagnosticsContainer
 import io.github.rosemoe.sora.widget.CodeEditor
+import io.github.rosemoe.sora.widget.EditorSearcher
 import kotlin.math.abs
 
 /**
@@ -51,6 +53,9 @@ class CodeEditorView @JvmOverloads constructor(
     /** 因超长单行临时开启的换行（内容变短后自动恢复用户设置） */
     private var autoWrapped = false
 
+    /** 业务侧是否允许编辑（值为 null 时锁住），与设置开关相互独立 */
+    private var isEnabledForUser = true
+
     /** 因超长行自动开启换行时回调一次（用于提示用户） */
     var onAutoWrap: (() -> Unit)? = null
 
@@ -69,25 +74,13 @@ class CodeEditorView @JvmOverloads constructor(
         setBackgroundColor(themeColors.background)
         setEditorLanguage(language)
 
-        // 行号：显示，但不开「粘性行号面板」（代码页用不到，省一点绘制）
-        setLineNumberEnabled(true)
-        setPinLineNumber(false)
-        setDisplayLnPanel(true)
-
-        // 代码场景：硬键盘 Tab 用空格更符合 JSON 习惯；这里不需要 Tab 缩进
+        // 代码场景：硬键盘 Tab 用空格更符合 JSON 习惯
         setTabWidth(4)
 
-        // 关闭自动补全/自动缩进：JSON 里这些「贴心功能」反而容易改坏内容
+        // 关闭自动补全：JSON 里自动补全反而容易改坏内容（此开关不开放给用户）
         props.apply {
-            autoIndent = false
-            symbolPairAutoCompletion = false
             autoCompletionOnComposing = false
             disallowSuggestions = true
-            // 滚动惯性：手感与旧版一致
-            scrollFling = true
-            overScrollEnabled = true
-            // 高亮匹配括号：JSON 结构清晰度的主要来源之一
-            highlightMatchingDelimiters = true
         }
 
         // 不让系统把编辑器内容塞进 View 状态 Bundle：
@@ -96,8 +89,8 @@ class CodeEditorView @JvmOverloads constructor(
         isSaveEnabled = false
         importantForAutofill = IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
 
-        // 滚动条用 Sora 自带的（跟随主题配色），保留系统滚动条会与自绘重叠
-        setScrollBarEnabled(true)
+        // 各项行为开关统一从设置读取（见 AppSettings 的 editor* 字段）
+        applyEditorOptions()
 
         subscribeEvent(ContentChangeEvent::class.java) { event, _ ->
             val text = getText()
@@ -172,6 +165,13 @@ class CodeEditorView @JvmOverloads constructor(
             post { scrollTo(0, 0) }
         }
         currentError?.let { applyDiagnostics(it) }
+        // setText() 会新建 Content 实例，撤销栈也跟着重置，这里按设置恢复一次
+        getText().setUndoEnabled(AppSettings.editorUndo)
+        // 编辑器换了一整篇新内容，旧的行缓存全部作废，重新下发一次着色
+        language.notifyContentReplaced()
+        // 程序性替换（导入 / 格式化 / 清空 / 恢复）不会走用户编辑的回调，
+        // 但调用方依赖它去重新解析、刷新表单与大纲，所以这里主动通知一次。
+        onTextChanged?.invoke()
     }
 
     /** 置顶：滚到第一行 */
@@ -240,6 +240,105 @@ class CodeEditorView @JvmOverloads constructor(
     private var searchMatches: List<IntRange> = emptyList()
     private var searchCurrent: Int = -1
 
+    // ---------- Sora 原生搜索（正则 / 替换） ----------
+
+    /**
+     * 用 Sora 的 [io.github.rosemoe.sora.widget.EditorSearcher] 做搜索。
+     *
+     * 相比自己扫 `CharSequence.indexOf`，这里多了**正则**能力，且搜索在 Sora 内部线程池
+     * 跑、超大文本不卡主线程。命中高亮与「当前命中」由 Sora 自己维护，不用再走诊断通道。
+     *
+     * @param pattern 关键词或正则
+     * @param regex true 时按正则解析
+     * @param caseSensitive true 时区分大小写
+     * @param callback 搜索结束（结果已就绪）后回主线程回调，参数为命中总数
+     * @return false 表示正则非法，已自动回退到普通搜索
+     */
+    fun searchWithSora(
+        pattern: String,
+        regex: Boolean,
+        caseSensitive: Boolean,
+        callback: ((count: Int) -> Unit)? = null
+    ): Boolean {
+        val searcher = getSearcher()
+        if (pattern.isEmpty()) {
+            searcher.stopSearch()
+            searchMatches = emptyList()
+            searchCurrent = -1
+            applyDiagnostics(currentError)
+            callback?.invoke(0)
+            return true
+        }
+        var fallback = false
+        // 正则先自己编译一次：非法表达式直接本地拦下，避免 Sora 内部抛 PatternSyntaxException 崩掉
+        if (regex && runCatching { java.util.regex.Pattern.compile(pattern) }.isFailure) {
+            fallback = true
+        }
+        val type = if (regex && !fallback) {
+            EditorSearcher.SearchOptions.TYPE_REGULAR_EXPRESSION
+        } else {
+            EditorSearcher.SearchOptions.TYPE_NORMAL
+        }
+        searcher.setCyclicJumping(true)
+        searcher.search(pattern, EditorSearcher.SearchOptions(type, !caseSensitive))
+        // 清空自定义诊断（错误除外），把高亮交给 Sora
+        searchMatches = emptyList()
+        searchCurrent = -1
+        applyDiagnostics(currentError)
+        if (callback != null) {
+            // searcher.search 是异步的，下一帧再取结果
+            postDelayed({ callback(searcher.matchedPositionCount) }, 60)
+        }
+        return !fallback
+    }
+
+    /** 跳到下一个命中；没有命中时返回 false */
+    fun searchNext(): Boolean = runCatching { getSearcher().gotoNext() }.getOrDefault(false)
+
+    /** 跳到上一个命中 */
+    fun searchPrevious(): Boolean = runCatching { getSearcher().gotoPrevious() }.getOrDefault(false)
+
+    /** 当前命中序号（从 0 开始，无命中返回 -1） */
+    fun searchMatchIndex(): Int =
+        runCatching { getSearcher().currentMatchedPositionIndex }.getOrDefault(-1)
+
+    /** 命中总数 */
+    fun searchMatchCount(): Int =
+        runCatching { getSearcher().matchedPositionCount }.getOrDefault(0)
+
+    /** 停止搜索，清掉高亮 */
+    fun stopSearch() {
+        runCatching { getSearcher().stopSearch() }
+        searchMatches = emptyList()
+        searchCurrent = -1
+        applyDiagnostics(currentError)
+    }
+
+    /** 替换当前命中（未选中命中时等价于点一次「下一个」再替换） */
+    fun replaceCurrent(replacement: String) {
+        runCatching { getSearcher().replaceCurrentMatch(replacement) }
+        notifyTextReplacedBySearch()
+    }
+
+    /** 替换全部命中 */
+    fun replaceAllMatches(replacement: String, onDone: ((count: Int) -> Unit)? = null) {
+        val total = searchMatchCount()
+        runCatching {
+            getSearcher().replaceAll(replacement) {
+                // Sora 在替换完成后回调（主线程），这里再通知一次内容变更
+                notifyTextReplacedBySearch()
+                onDone?.invoke(total)
+            }
+        }.onFailure { onDone?.invoke(0) }
+    }
+
+    /** 替换会改内容但走的是 Sora 内部通道，这里补一次着色刷新与业务回调 */
+    private fun notifyTextReplacedBySearch() {
+        getText().setUndoEnabled(AppSettings.editorUndo)
+        language.notifyContentReplaced()
+        onTextChanged?.invoke()
+    }
+
     /** 把错误行 / 错误列 / 搜索命中 / 定位闪烁统一转成诊断区下发给编辑器 */
     private fun applyDiagnostics(error: JsonError?) {
         val container = DiagnosticsContainer()
@@ -297,6 +396,35 @@ class CodeEditorView @JvmOverloads constructor(
         setBackgroundColor(colors.background)
     }
 
+    /**
+     * 应用「设置 → 代码编辑器」里的行为开关。
+     *
+     * 全部走 Sora 自己的开关，改完立即生效，不需要重启或重建编辑器。
+     */
+    fun applyEditorOptions() {
+        setLineNumberEnabled(AppSettings.editorLineNumbers)
+        setLineNumbersPinned(AppSettings.editorPinLineNumber)
+        setHighlightCurrentLine(AppSettings.editorHighlightCurrentLine)
+        setHighlightBracketPair(AppSettings.editorHighlightBrackets)
+        setScrollBarEnabled(AppSettings.editorScrollBar)
+        setEditable(isEnabledForUser)
+        // 撤销栈是 Content 层的开关（关掉后不再记录历史，省一点内存）
+        getText().setUndoEnabled(AppSettings.editorUndo)
+        props.apply {
+            autoIndent = AppSettings.editorAutoIndent
+            symbolPairAutoCompletion = AppSettings.editorSymbolPair
+            scrollFling = AppSettings.editorScrollFling
+            overScrollEnabled = AppSettings.editorOverScroll
+            highlightMatchingDelimiters = AppSettings.editorHighlightBrackets
+        }
+    }
+
+    /** Sora 的行号气泡（滚动时常驻显示当前行号） */
+    private fun setLineNumbersPinned(pinned: Boolean) {
+        setPinLineNumber(pinned)
+        setDisplayLnPanel(pinned)
+    }
+
     /** 从 ThemeManager 读取当前设置并应用：配色、字体族、字号(含缩放)、换行 */
     fun applyThemeFromManager() {
         themeColors = ThemeManager.activeColors
@@ -309,6 +437,7 @@ class CodeEditorView @JvmOverloads constructor(
         applyFontSize((ThemeManager.codeFontSize * currentScale).coerceIn(8f, 40f))
         userWrap = ThemeManager.codeWrap
         setWordwrap(userWrap, false)
+        applyEditorOptions()
         applyDiagnostics(currentError)
     }
 
@@ -484,6 +613,7 @@ class CodeEditorView @JvmOverloads constructor(
      * 同时把 View 置灰，让用户一眼看出「这一格现在不能改」（值为 null 时）。
      */
     fun setEditorEditable(editable: Boolean) {
+        isEnabledForUser = editable
         setEditable(editable)
         alpha = if (editable) 1f else 0.55f
     }

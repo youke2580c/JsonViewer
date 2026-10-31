@@ -132,6 +132,7 @@ class JsonSpansLanguageTest {
             JsonSpansLanguage.ColorIds.PUNCT
         )
         assertEquals(ids.size, ids.toSet().size)
-        assertTrue(ids.all { it > 100 })
+        // 内置槽位 0..66（EditorColorScheme.END_COLOR_ID = 66，protected 不能直接引用）
+        assertTrue(ids.all { it > 66 })
     }
 }

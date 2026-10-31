@@ -128,6 +128,90 @@ object AppSettings {
         get() = prefs.getBoolean("showQuickJump", true)
         set(v) = prefs.edit().putBoolean("showQuickJump", v).apply()
 
+    // ---------- 编辑器（Sora Editor）行为开关 ----------
+
+    /** 行号栏：长文本下关掉能省一点横向空间与绘制 */
+    var editorLineNumbers: Boolean
+        get() = prefs.getBoolean("editorLineNumbers", true)
+        set(v) = prefs.edit().putBoolean("editorLineNumbers", v).apply()
+
+    /** 高亮当前行（整行底色） */
+    var editorHighlightCurrentLine: Boolean
+        get() = prefs.getBoolean("editorHighlightCurrentLine", true)
+        set(v) = prefs.edit().putBoolean("editorHighlightCurrentLine", v).apply()
+
+    /** 高亮匹配的括号对：看 JSON 嵌套结构最有用的一项 */
+    var editorHighlightBrackets: Boolean
+        get() = prefs.getBoolean("editorHighlightBrackets", true)
+        set(v) = prefs.edit().putBoolean("editorHighlightBrackets", v).apply()
+
+    /** 滚动条 */
+    var editorScrollBar: Boolean
+        get() = prefs.getBoolean("editorScrollBar", true)
+        set(v) = prefs.edit().putBoolean("editorScrollBar", v).apply()
+
+    /** 滚动惯性（甩动后继续滑行） */
+    var editorScrollFling: Boolean
+        get() = prefs.getBoolean("editorScrollFling", true)
+        set(v) = prefs.edit().putBoolean("editorScrollFling", v).apply()
+
+    /** 到达边界时的回弹效果 */
+    var editorOverScroll: Boolean
+        get() = prefs.getBoolean("editorOverScroll", true)
+        set(v) = prefs.edit().putBoolean("editorOverScroll", v).apply()
+
+    /** 自动缩进：回车后对齐上一行缩进 */
+    var editorAutoIndent: Boolean
+        get() = prefs.getBoolean("editorAutoIndent", false)
+        set(v) = prefs.edit().putBoolean("editorAutoIndent", v).apply()
+
+    /** 输入 `"` `{` 等符号时自动补全配对符号 */
+    var editorSymbolPair: Boolean
+        get() = prefs.getBoolean("editorSymbolPair", false)
+        set(v) = prefs.edit().putBoolean("editorSymbolPair", v).apply()
+
+    /** 删除标记：可取消的删除（撤销栈） */
+    var editorUndo: Boolean
+        get() = prefs.getBoolean("editorUndo", true)
+        set(v) = prefs.edit().putBoolean("editorUndo", v).apply()
+
+    /** 行号面板常驻（滚动时始终固定显示当前行号气泡） */
+    var editorPinLineNumber: Boolean
+        get() = prefs.getBoolean("editorPinLineNumber", false)
+        set(v) = prefs.edit().putBoolean("editorPinLineNumber", v).apply()
+
+    // ---------- 代码搜索（Sora EditorSearcher） ----------
+
+    /** 搜索总开关：关掉后代码模式搜索栏只做纯文本匹配（旧行为） */
+    var editorSearch: Boolean
+        get() = prefs.getBoolean("editorSearch", true)
+        set(v) = prefs.edit().putBoolean("editorSearch", v).apply()
+
+    /** 显示「Aa 区分大小写」按钮 */
+    var editorSearchCase: Boolean
+        get() = prefs.getBoolean("editorSearchCase", true)
+        set(v) = prefs.edit().putBoolean("editorSearchCase", v).apply()
+
+    /** 显示「.* 正则搜索」按钮 */
+    var editorSearchRegex: Boolean
+        get() = prefs.getBoolean("editorSearchRegex", true)
+        set(v) = prefs.edit().putBoolean("editorSearchRegex", v).apply()
+
+    /** 显示「替换 / 全部替换」入口 */
+    var editorSearchReplace: Boolean
+        get() = prefs.getBoolean("editorSearchReplace", true)
+        set(v) = prefs.edit().putBoolean("editorSearchReplace", v).apply()
+
+    /** 记住上次是否开启正则（下次打开搜索时沿用） */
+    var editorSearchRegexLast: Boolean
+        get() = prefs.getBoolean("editorSearchRegexLast", false)
+        set(v) = prefs.edit().putBoolean("editorSearchRegexLast", v).apply()
+
+    /** 记住上次是否区分大小写 */
+    var editorSearchCaseLast: Boolean
+        get() = prefs.getBoolean("editorSearchCaseLast", false)
+        set(v) = prefs.edit().putBoolean("editorSearchCaseLast", v).apply()
+
     /**
      * 系统级文本选择菜单是否显示「查看 JSON」入口。
      *

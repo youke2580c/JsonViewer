@@ -10,55 +10,77 @@ import io.github.rosemoe.sora.widget.schemes.EditorColorScheme
  *
  * 全部色值都从当前主题取，因此换主题、改自定义背景/主色、自动对比度都会跟着变，
  * 不需要为编辑器单独维护一套配色。
+ *
+ * **每个槽位都必须显式写入**：`EditorColorScheme.getColor(id)` 对没设置过的 ID 返回
+ * 默认色（内置方案接近白底黑字），在深色主题下就会变成「文字和背景一个色」。
  */
 object JsonEditorTheme {
 
     /** 按当前主题生成一份配色方案 */
     fun schemeOf(colors: ThemeColors): EditorColorScheme {
         val scheme = EditorColorScheme()
+        // 选中/当前行等「叠加层」需要和背景拉开差距：深色底提亮，浅色底压暗
+        val overlay = translucent(colors.text, if (isDark(colors.background)) 0.12f else 0.07f)
+        val overlayStrong = translucent(colors.accent, 0.22f)
+
         with(scheme) {
-            // 背景与正文
+            // ---------- 基础 ----------
             setColor(EditorColorScheme.WHOLE_BACKGROUND, colors.background)
             setColor(EditorColorScheme.TEXT_NORMAL, colors.text)
 
-            // 行号
+            // ---------- 行号 ----------
             setColor(EditorColorScheme.LINE_NUMBER_BACKGROUND, colors.gutter)
             setColor(EditorColorScheme.LINE_NUMBER, colors.gutterText)
             setColor(EditorColorScheme.LINE_NUMBER_CURRENT, colors.accent)
+            setColor(EditorColorScheme.LINE_NUMBER_PANEL, colors.surface)
+            setColor(EditorColorScheme.LINE_NUMBER_PANEL_TEXT, colors.text)
+            setColor(EditorColorScheme.LINE_DIVIDER, colors.gutter)
 
-            // 当前行 / 选中 / 搜索
-            setColor(EditorColorScheme.CURRENT_LINE, mix(colors.background, colors.text, 0.05f))
+            // ---------- 当前行 / 选中 ----------
+            setColor(EditorColorScheme.CURRENT_LINE, overlay)
             setColor(EditorColorScheme.SELECTED_TEXT_BACKGROUND, colors.treeSelected)
             setColor(EditorColorScheme.SELECTION_INSERT, colors.accent)
             setColor(EditorColorScheme.SELECTION_HANDLE, colors.accent)
+            setColor(EditorColorScheme.TEXT_SELECTED, colors.text)
+            setColor(EditorColorScheme.BLOCK_LINE, overlay)
+            setColor(EditorColorScheme.BLOCK_LINE_CURRENT, overlay)
+
+            // ---------- 搜索 ----------
+            setColor(EditorColorScheme.MATCHED_TEXT_BACKGROUND, colors.searchMatch)
             setColor(EditorColorScheme.HIGHLIGHTED_DELIMITERS_BACKGROUND, colors.searchMatch)
             setColor(EditorColorScheme.HIGHLIGHTED_DELIMITERS_UNDERLINE, colors.accent)
             setColor(EditorColorScheme.HIGHLIGHTED_DELIMITERS_FOREGROUND, colors.text)
 
-            // 找到的文本（编辑器自带搜索模式会用）
-            setColor(EditorColorScheme.MATCHED_TEXT_BACKGROUND, colors.searchMatch)
-            setColor(EditorColorScheme.TEXT_SELECTED, colors.text)
-
-            // 滚动条
+            // ---------- 滚动条 ----------
             setColor(EditorColorScheme.SCROLL_BAR_TRACK, colors.gutter)
             setColor(EditorColorScheme.SCROLL_BAR_THUMB, colors.gutterText)
             setColor(EditorColorScheme.SCROLL_BAR_THUMB_PRESSED, colors.accent)
 
-            // 语法高亮：用自定义槽位，由 JsonSpansLanguage 引用
+            // ---------- 语法高亮（自定义槽位，必须全部写入） ----------
             setColor(JsonSpansLanguage.ColorIds.KEY, colors.jsonKey)
             setColor(JsonSpansLanguage.ColorIds.STRING, colors.jsonString)
             setColor(JsonSpansLanguage.ColorIds.NUMBER, colors.jsonNumber)
             setColor(JsonSpansLanguage.ColorIds.LITERAL, colors.jsonBoolean)
             setColor(JsonSpansLanguage.ColorIds.PUNCT, colors.jsonPunct)
 
-            // 诊断波浪线（错误定位用）
+            // ---------- 诊断（错误 / 警告 / 拼写） ----------
             setColor(EditorColorScheme.PROBLEM_ERROR, colors.jsonBoolean)
             setColor(EditorColorScheme.PROBLEM_WARNING, colors.jsonNumber)
             setColor(EditorColorScheme.PROBLEM_TYPO, colors.gutterText)
 
-            // 行号气泡 / 侧栏
-            setColor(EditorColorScheme.LINE_NUMBER_PANEL, colors.surface)
-            setColor(EditorColorScheme.LINE_NUMBER_PANEL_TEXT, colors.text)
+            // ---------- 自动补全与文本操作弹窗（默认白底，深色主题下会刺眼） ----------
+            setColor(EditorColorScheme.COMPLETION_WND_BACKGROUND, colors.surface)
+            setColor(EditorColorScheme.COMPLETION_WND_TEXT_PRIMARY, colors.text)
+            setColor(EditorColorScheme.COMPLETION_WND_TEXT_SECONDARY, colors.gutterText)
+            setColor(EditorColorScheme.COMPLETION_WND_ITEM_CURRENT, overlayStrong)
+
+            setColor(EditorColorScheme.TEXT_ACTION_WINDOW_BACKGROUND, colors.surface)
+            setColor(EditorColorScheme.TEXT_ACTION_WINDOW_ICON_COLOR, colors.accent)
+
+            // ---------- 静态 span / 粘性分隔线 ----------
+            setColor(EditorColorScheme.STATIC_SPAN_BACKGROUND, overlayStrong)
+            setColor(EditorColorScheme.STATIC_SPAN_FOREGROUND, colors.text)
+            setColor(EditorColorScheme.STICKY_SCROLL_DIVIDER, colors.gutter)
         }
         return scheme
     }
@@ -66,7 +88,24 @@ object JsonEditorTheme {
     /** 按当前生效主题生成 */
     fun currentScheme(): EditorColorScheme = schemeOf(ThemeManager.activeColors)
 
-    private fun mix(a: Int, b: Int, ratio: Float): Int {
+    /** 判断某个颜色属于深色还是浅色（决定叠加层提亮还是压暗） */
+    fun isDark(color: Int): Boolean {
+        val luma = (0.299 * Color.red(color) + 0.587 * Color.green(color) + 0.114 * Color.blue(color)) / 255.0
+        return luma < 0.5
+    }
+
+    /** 带透明度的叠加色 */
+    private fun translucent(base: Int, alpha: Float): Int {
+        return Color.argb(
+            (alpha * 255).toInt().coerceIn(0, 255),
+            Color.red(base),
+            Color.green(base),
+            Color.blue(base)
+        )
+    }
+
+    /** 不透明混合，[ratio] 是 [b] 的占比 */
+    fun mix(a: Int, b: Int, ratio: Float): Int {
         val r = ((Color.red(a) * (1 - ratio)) + Color.red(b) * ratio).toInt()
         val g = ((Color.green(a) * (1 - ratio)) + Color.green(b) * ratio).toInt()
         val bl = ((Color.blue(a) * (1 - ratio)) + Color.blue(b) * ratio).toInt()

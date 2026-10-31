@@ -73,13 +73,19 @@
             <LinearLayout
                 android:id="@+id/searchRowCode"
                 android:layout_width="match_parent"
-                android:layout_height="44dp"
+                android:layout_height="wrap_content"
                 android:background="@color/editor_gutter"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
+                android:orientation="vertical"
                 android:paddingStart="8dp"
                 android:paddingEnd="4dp"
+                android:paddingBottom="4dp"
                 android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
 
                 <EditText
                     android:id="@+id/searchInputCode"
@@ -129,6 +135,95 @@
                     android:contentDescription="关闭搜索"
                     android:src="@drawable/ic_close"
                     app:tint="@color/json_null" />
+            </LinearLayout>
+
+            <!-- 第二行：大小写 / 正则 / 显示替换。由「设置 → 编辑器」里的开关决定是否出现 -->
+            <LinearLayout
+                android:id="@+id/searchOptionsRow"
+                android:layout_width="match_parent"
+                android:layout_height="32dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/searchCaseToggle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="match_parent"
+                    android:gravity="center"
+                    android:minWidth="48dp"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:text="Aa"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/searchRegexToggle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="match_parent"
+                    android:gravity="center"
+                    android:minWidth="48dp"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:text=".*"
+                    android:textSize="12sp" />
+
+                <View
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+
+                <TextView
+                    android:id="@+id/searchReplaceToggle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="match_parent"
+                    android:gravity="center"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:text="替换"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <!-- 第三行：替换输入 + 替换 / 全部替换（默认隐藏） -->
+            <LinearLayout
+                android:id="@+id/searchReplaceRow"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <EditText
+                    android:id="@+id/searchReplaceInput"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:background="@null"
+                    android:hint="替换为"
+                    android:imeOptions="actionDone"
+                    android:inputType="text"
+                    android:singleLine="true"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/searchReplaceOne"
+                    android:layout_width="wrap_content"
+                    android:layout_height="match_parent"
+                    android:gravity="center"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
+                    android:text="替换"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/searchReplaceAll"
+                    android:layout_width="wrap_content"
+                    android:layout_height="match_parent"
+                    android:gravity="center"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
+                    android:text="全部"
+                    android:textSize="12sp" />
+            </LinearLayout>
             </LinearLayout>
 
             <com.guaner.jsonviewer.ui.CodeEditorView

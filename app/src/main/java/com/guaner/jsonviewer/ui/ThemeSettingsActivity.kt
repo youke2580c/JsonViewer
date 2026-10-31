@@ -258,6 +258,12 @@ class ThemeSettingsActivity : AppCompatActivity() {
         }
     }
 
+    /** 编辑器开关是「设置里改、主界面生效」，这里只记录版本号，返回主界面时统一应用 */
+    private fun notifyEditorOptionsChanged() {
+        // 主界面在 onResume 会重新 applyThemeFromManager()，内部已包含 applyEditorOptions()；
+        // 这里不需要额外广播，保持简单。
+    }
+
     // ---------- 常规设置（与配色无关） ----------
 
     private fun setupGeneral() {
@@ -272,6 +278,74 @@ class ThemeSettingsActivity : AppCompatActivity() {
         }
         binding.quickJumpSwitch.setOnCheckedChangeListener { _, checked ->
             AppSettings.showQuickJump = checked
+        }
+
+        // 代码编辑器（Sora）行为开关：写入设置后下一帧统一刷新一次编辑器
+        with(binding) {
+            editorLineNumbersSwitch.isChecked = AppSettings.editorLineNumbers
+            editorCurrentLineSwitch.isChecked = AppSettings.editorHighlightCurrentLine
+            editorBracketsSwitch.isChecked = AppSettings.editorHighlightBrackets
+            editorScrollBarSwitch.isChecked = AppSettings.editorScrollBar
+            editorScrollFlingSwitch.isChecked = AppSettings.editorScrollFling
+            editorOverScrollSwitch.isChecked = AppSettings.editorOverScroll
+            editorUndoSwitch.isChecked = AppSettings.editorUndo
+            editorAutoIndentSwitch.isChecked = AppSettings.editorAutoIndent
+            editorSymbolPairSwitch.isChecked = AppSettings.editorSymbolPair
+            editorSearchSwitch.isChecked = AppSettings.editorSearch
+            editorSearchCaseSwitch.isChecked = AppSettings.editorSearchCase
+            editorSearchRegexSwitch.isChecked = AppSettings.editorSearchRegex
+            editorSearchReplaceSwitch.isChecked = AppSettings.editorSearchReplace
+
+            editorLineNumbersSwitch.setOnCheckedChangeListener { _, v ->
+                AppSettings.editorLineNumbers = v
+                notifyEditorOptionsChanged()
+            }
+            editorCurrentLineSwitch.setOnCheckedChangeListener { _, v ->
+                AppSettings.editorHighlightCurrentLine = v
+                notifyEditorOptionsChanged()
+            }
+            editorBracketsSwitch.setOnCheckedChangeListener { _, v ->
+                AppSettings.editorHighlightBrackets = v
+                notifyEditorOptionsChanged()
+            }
+            editorScrollBarSwitch.setOnCheckedChangeListener { _, v ->
+                AppSettings.editorScrollBar = v
+                notifyEditorOptionsChanged()
+            }
+            editorScrollFlingSwitch.setOnCheckedChangeListener { _, v ->
+                AppSettings.editorScrollFling = v
+                notifyEditorOptionsChanged()
+            }
+            editorOverScrollSwitch.setOnCheckedChangeListener { _, v ->
+                AppSettings.editorOverScroll = v
+                notifyEditorOptionsChanged()
+            }
+            editorUndoSwitch.setOnCheckedChangeListener { _, v ->
+                AppSettings.editorUndo = v
+                notifyEditorOptionsChanged()
+            }
+            editorAutoIndentSwitch.setOnCheckedChangeListener { _, v ->
+                AppSettings.editorAutoIndent = v
+                notifyEditorOptionsChanged()
+            }
+            editorSymbolPairSwitch.setOnCheckedChangeListener { _, v ->
+                AppSettings.editorSymbolPair = v
+                notifyEditorOptionsChanged()
+            }
+            editorSearchSwitch.setOnCheckedChangeListener { _, v ->
+                AppSettings.editorSearch = v
+                syncSearchSubSwitches()
+            }
+            editorSearchCaseSwitch.setOnCheckedChangeListener { _, v ->
+                AppSettings.editorSearchCase = v
+            }
+            editorSearchRegexSwitch.setOnCheckedChangeListener { _, v ->
+                AppSettings.editorSearchRegex = v
+            }
+            editorSearchReplaceSwitch.setOnCheckedChangeListener { _, v ->
+                AppSettings.editorSearchReplace = v
+            }
+            syncSearchSubSwitches()
         }
         // 系统文本菜单「查看 JSON」入口：启/停 activity-alias，长按选词立即生效
         binding.processTextSwitch.isChecked = AppSettings.showProcessText
@@ -1108,10 +1182,21 @@ class ThemeSettingsActivity : AppCompatActivity() {
             binding.autoRestoreSwitch, binding.quickJumpSwitch,
             binding.processTextSwitch, binding.filterImportSwitch,
             binding.crashLogSwitch,
+            // 编辑器行为卡片新增的 9 个开关，必须一起 tint，否则深色主题下轨道是系统默认色
+            binding.editorLineNumbersSwitch, binding.editorCurrentLineSwitch,
+            binding.editorBracketsSwitch, binding.editorScrollBarSwitch,
+            binding.editorScrollFlingSwitch, binding.editorOverScrollSwitch,
+            binding.editorUndoSwitch, binding.editorAutoIndentSwitch,
+            binding.editorSymbolPairSwitch,
+            binding.editorSearchSwitch, binding.editorSearchCaseSwitch,
+            binding.editorSearchRegexSwitch, binding.editorSearchReplaceSwitch,
         ).forEach {
             it.thumbTintList = accent
             it.trackTintList = trackTint
         }
+
+        // 编辑器行为卡片的副标题统一压暗（无 id，按 textSize=11sp 识别）
+        tintEditorHints(binding.cardEditor, colors.gutterText)
 
         // 十六进制输入框文字色
         binding.brandHex.setTextColor(colors.text)
@@ -1120,6 +1205,28 @@ class ThemeSettingsActivity : AppCompatActivity() {
 
         // 预设/已保存主题卡片：文字色与描边色跟随主题（拖动滑块时跳过，松手后统一刷新）
         if (!draggingSlider) refreshAdapterTheming()
+    }
+
+    /** 搜索总开关关闭时，三个子开关置灰（保留勾选状态，重新打开时原样恢复） */
+    private fun syncSearchSubSwitches() {
+        val on = AppSettings.editorSearch
+        listOf(
+            binding.editorSearchCaseSwitch,
+            binding.editorSearchRegexSwitch,
+            binding.editorSearchReplaceSwitch
+        ).forEach {
+            it.isEnabled = on
+            it.alpha = if (on) 1f else 0.45f
+        }
+    }
+
+    /** 把编辑器卡片里 11sp 的说明文字刷成次要色（正文色由 colorAllText 统一给，这里再压暗） */
+    private fun tintEditorHints(v: View, color: Int) {
+        if (v is TextView && v.textSize <= 11.5f) {
+            v.setTextColor(color)
+            return
+        }
+        if (v is ViewGroup) for (i in 0 until v.childCount) tintEditorHints(v.getChildAt(i), color)
     }
 
     /** 让主题卡片列表重新绑定（文字色 / 描边色随主题变化） */
