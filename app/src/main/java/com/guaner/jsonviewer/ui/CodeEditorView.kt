@@ -21,6 +21,7 @@ import com.guaner.jsonviewer.json.JsonError
 import com.guaner.jsonviewer.json.JsonLimits
 import com.guaner.jsonviewer.json.JsonParser
 import com.guaner.jsonviewer.json.ParseResult
+import com.guaner.jsonviewer.text.ImeSelection
 import com.guaner.jsonviewer.text.SafeFolder
 import com.guaner.jsonviewer.theme.ThemeColors
 import com.guaner.jsonviewer.theme.ThemeManager
@@ -63,6 +64,17 @@ class CodeEditorView @JvmOverloads constructor(
     /** 文本变化回调（用户输入与代码设置都会触发） */
     var onTextChanged: (() -> Unit)? = null
 
+    /**
+     * 是否允许「超长行自动折行」。
+     *
+     * **只有主编辑器应该打开**：折行会往文本里插入真实的 `\n`，主编辑器里这是为了让
+     * 一行几十万字符的文本能编辑（JSON 结构内的换行不影响语义）。
+     * 但值编辑面板（ValueSheet）是拿编辑器改**某一个节点的值**，那里插入的换行会被
+     * 当成值的一部分写回 JSON —— 字符串值里出现裸换行就是非法 JSON。
+     * 所以这里默认关闭，由主界面显式打开。
+     */
+    var autoFoldEnabled: Boolean = false
+
     /** 内容超出安全上限时回调（用于提示，不截断） */
     var onOversize: ((Int) -> Unit)? = null
 
@@ -77,8 +89,24 @@ class CodeEditorView @JvmOverloads constructor(
     private var lastCanRedo = false
     private var oversizeWarned = false
 
+    /**
+     * 文本被**程序重排**（超长行自动折行）时回调。
+     *
+     * 折行只插入换行符、不删任何字符，所以 JSON 语义不变，但所有**基于字符偏移**
+     * 的东西（错误位置、搜索命中、跳转高亮）全部失效。上层接到这个回调要把它们
+     * 作废并重算 —— 否则就会「明明改对了，错误波浪线还停在别的地方」。
+     */
+    var onTextRearranged: (() -> Unit)? = null
+
     /** 程序性设置文本期间不回调 [onTextChanged]，避免「恢复会话」被当成用户编辑 */
     private var suppressCallback = false
+
+    /** 输入法是否正在组词；组词期间不能整篇替换文本（见 [foldLongLinesIfNeeded]） */
+    @Volatile
+    private var imeComposing = false
+
+    /** 自动折行的提示已经弹过一次了，重复弹会变成骚扰 */
+    private var foldNotified = false
 
     init {
         // 编辑器自己就是 View，去掉背景边框，背景色由主题决定
@@ -206,7 +234,7 @@ class CodeEditorView @JvmOverloads constructor(
         try {
             // 内容里若有一行几十万字符，`setText()` 会按软换行整体断一遍 ——
             // 官方 `breakLine` 是 O(n²)，这一步能卡几十秒。先把它折成短行再灌进去。
-            val prepared = if (userWrap && value.length >= FOLD_MIN_TOTAL_CHARS) {
+            val prepared = if (autoFoldEnabled && userWrap && value.length >= FOLD_MIN_TOTAL_CHARS) {
                 foldSafely(value)?.also { folded = true }?.text ?: value
             } else {
                 value
@@ -215,13 +243,18 @@ class CodeEditorView @JvmOverloads constructor(
         } finally {
             suppressCallback = false
         }
-        if (folded) notifyAutoFolded(hasLineWiderThan(getText(), HUGE_LINE_CHARS))
+        // 整篇换成新内容：旧的「按字符偏移」状态（错误位置 / 搜索命中 / 跳转高亮）
+        // 全部指向旧文本，一律作废，等重新解析再算。折过的那份尤其要提示一次。
+        invalidateOffsetBasedState()
+        if (folded && !foldNotified) {
+            foldNotified = true
+            notifyAutoFolded(hasLineWiderThan(getText(), HUGE_LINE_CHARS))
+        }
         oversizeWarned = getText().length > JsonLimits.MAX_INPUT_CHARS
         if (forceTop) {
             setCursorOffset(0)
             post { scrollTo(0, 0) }
         }
-        currentError?.let { applyDiagnostics(it) }
         // setText() 会新建 Content 实例，撤销栈也跟着重置，这里按设置恢复一次
         getText().setUndoEnabled(AppSettings.editorUndo)
         // `setText()` 内部已经走了一次 `AnalyzeManager.reset()`，着色会按新内容全量重建；
@@ -295,14 +328,12 @@ class CodeEditorView @JvmOverloads constructor(
     /**
      * 更新「当前内容是否通过 JSON 校验」。
      *
-     * 这里有两个副作用，都是为了省掉白做的活：
-     * - 解析失败 → 关掉语法着色。错的文本里全是无意义的值/键，逐 token 扫描、
-     *   下发几万个 `Span` 都是白<｜hy_place▁holder▁no▁813｜>，而「粘贴一大段有问题的 JSON、再一点点改对」
-     *   恰好是最需要跟手的时刻。
-     * - 解析失败 → 不再折行。`SafeFolder` 靠引号状态判断「哪些符号在字符串内」，
-     *   文本本身引号不平衡时这个判断会错位，就会在**字符串内部**插入真实换行，
-     *   直接把内容改坏（这也是「\n 变成实际换行、无法美化」的来源）。
-     *   宁可留着长行慢慢断，也不能碰坏内容。
+     * 唯一的副作用：解析失败 → 关掉语法着色。错的文本里全是无意义的值/键，
+     * 逐 token 扫描、下发几万个 `Span` 都是白做，而「粘贴一大段有问题的 JSON、
+     * 再一点点改对」恰好是最需要跟手的时刻。
+     *
+     * 自动折行**不跟着关**：折行有自己的安全闸（见 `foldSafely`），而且越是不合法
+     * 的输入往往越需要折行 —— 不折就是一整行长到拖不动。
      */
     fun setError(error: JsonError?) {
         currentError = error
@@ -651,17 +682,20 @@ class CodeEditorView @JvmOverloads constructor(
     private val foldCheckRunnable = Runnable { foldLongLinesIfNeeded() }
 
     private fun scheduleFoldCheck() {
-        if (!userWrap) return
+        if (!userWrap || !autoFoldEnabled) return
         handler.removeCallbacks(foldCheckRunnable)
         handler.postDelayed(foldCheckRunnable, FOLD_CHECK_DELAY_MS)
     }
 
     /** 文档里存在超过折行阈值的行时，就地折一次 */
     private fun foldLongLinesIfNeeded() {
-        if (folding || !userWrap) return
-        // 文本不合法时不折：见 setError 的注释，折行依赖引号状态判断，
-        // 对不合法的文本会读错作用域，在字符串内部插真换行、改坏内容。
-        if (!jsonValid) return
+        if (!autoFoldEnabled || folding || !userWrap) return
+        if (imeComposing) {
+            // 输入法正在组词：此刻整篇替换文本，输入法手里的 composition 会失去依托，
+            // 常见后果就是上屏的内容串位。等它组完再折。
+            scheduleFoldCheck()
+            return
+        }
         val content = getText()
         val len = content.length
         if (len < FOLD_MIN_TOTAL_CHARS) return
@@ -682,37 +716,60 @@ class CodeEditorView @JvmOverloads constructor(
         }
         // 折行把行数整个改了一遍，语言层的行缓存与下线样式都已过时，推倒重建
         language.notifyContentReplaced()
+        invalidateOffsetBasedState()
         // 折行后行号全部变了，光标要按字符偏移重新定位
         runCatching { setCursorOffset(result.anchor.coerceIn(0, content.length)) }
-        currentError?.let { applyDiagnostics(it) }
-        // 折完还剩超长行，说明那是一整段超长字符串（引号内不能动），只能如实提示
-        notifyAutoFolded(hasLineWiderThan(content, HUGE_LINE_CHARS))
+        // 折完还剩超长行，说明那是一整段超长字符串（引号内不能动），只能如实提示。
+        // 只提示一次：反复粘贴会反复折行，每次弹 Toast 是骚扰。
+        if (!foldNotified) {
+            foldNotified = true
+            notifyAutoFolded(hasLineWiderThan(content, HUGE_LINE_CHARS))
+        }
         onTextChanged?.invoke()
+        // 上层基于字符偏移的状态（搜索命中列表、错误跳转）也要跟着作废
+        onTextRearranged?.invoke()
         dispatchUndoState()
     }
 
-    /** 文本能否被解析成 JSON；只用于折行前的安全校验，异常一律按「失败」处理 */
-    private fun parsesAsJson(text: String): Boolean = try {
-        JsonParser.parse(text) is ParseResult.Success
-    } catch (t: Throwable) {
-        false
+    /**
+     * 作废所有「按字符偏移」存下来的状态。
+     *
+     * 折行只插入换行符，不删任何字符 —— JSON 语义没变，但**偏移全变了**。
+     * 错误行号/列号、搜索命中区间、跳转高亮区间全都是偏移，留着就会画在错的地方，
+     * 典型表现是「明明已经改对了，波浪线还挂在别一行」。
+     *
+     * 这里一律清空，`setTextProgrammatic` 之后会由重新解析重新算出来。
+     * 宁可短暂没有标记，也不要给错位置的标记。
+     */
+    private fun invalidateOffsetBasedState() {
+        searchMatches = emptyList()
+        searchCurrent = -1
+        handler.removeCallbacks(clearFlashRunnable)
+        language.setFlashRange(-1, -1)
+        setError(null)
     }
 
+    // ---- 注意：这里**不看 jsonValid** ----
+    // 早期版本「JSON 有错就不折行」，本意是怕改坏内容；但那恰恰把最需要折行的输入
+    // 挡在了门外：粘贴进来的东西经常不是合法 JSON（日志、抽出来的片段、正在改的文本），
+    // 而它们同样可能是一行长到卡死的天量文本。真正的安全阀是下面的字符等价校验。
+
     /**
-     * 折行，并且**只在折行结果仍然能通过 JSON 校验时才采用**。
+     * 折行，并且**只在结果与原文本只差「插入的换行符」时才采用**。
      *
-     * 这是防止内容被改坏的最后一道闸。`SafeFolder` 靠引号状态判断「哪些符号在
+     * 这是防止内容被改坏的最后一道闸。[SafeFolder] 靠引号状态判断「哪些符号在
      * 字符串内」，一旦读错作用域（比如文本里有一个没转义的引号），它就会在
-     * **字符串里面**插入真实换行 —— JSON 里字符串不允许有裸换行，内容直接报废，
-     * 表现为「文本里的 \n 变成了实际换行、无法正确美化」。
+     * **字符串里面**插入真实换行 —— JSON 的字符串不允许裸换行，内容直接报废，
+     * 表现就是「文本里的 \n 变成了实际换行、无法正确美化」。
      *
-     * 折行按定义不改变 JSON 语义，所以折完过不了校验＝判断错了，放弃这一次。
+     * 折行按定义只做「插入换行」这一件事，所以拿折扣住 pterodactyl 与原文本逐字符
+     * 比对一次就足以证明它没有夹带任何别的改动；比对不过就整个放弃 ——
      * 长行慢一点可以忍，内容坏了不能忍。
      */
     private fun foldSafely(text: CharSequence, anchor: Int = -1): SafeFolder.Result? {
-        if (!userWrap || !jsonValid) return null
+        if (!autoFoldEnabled || !userWrap) return null
         val result = SafeFolder.foldWithAnchor(text, SafeFolder.DEFAULT_THRESHOLD, anchor) ?: return null
-        return if (parsesAsJson(result.text)) result else null
+        return if (SafeFolder.onlyInsertedLineBreaks(text, result.text, result.inserted)) result else null
     }
 
     private fun hasLineWiderThan(content: io.github.rosemoe.sora.text.Content, limit: Int): Boolean {
@@ -760,11 +817,13 @@ class CodeEditorView @JvmOverloads constructor(
         private var composing = false
 
         override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
-            composing = !text.isNullOrEmpty()
+            imeComposing = !text.isNullOrEmpty()
+            composing = imeComposing
             return super.setComposingText(text, newCursorPosition)
         }
 
         override fun finishComposingText(): Boolean {
+            imeComposing = false
             composing = false
             return super.finishComposingText()
         }
@@ -793,30 +852,27 @@ class CodeEditorView @JvmOverloads constructor(
             val index = (from + step).coerceIn(0, len)
             if (index == from) return true
             val pos = content.getIndexer().getCharPosition(index)
-            setSelection(pos.line, pos.column)
+            // 一定要显式指到 CodeEditorView：本类自己也有同名同签名的 setSelection(int, int)
+            this@CodeEditorView.setSelection(pos.line, pos.column)
             return true
         }
 
         /**
-         * `setSelection` 是另一条输入法常用的移动路径。
-         * Sora 自己实现了它，这里只做兜底：万一它因为别的原因返回 false，也不能丢。
+         * 输入法移动光标的另一条常用通道。
+         *
+         * Sora 的实现只对灰色名单做减法：`setSelection(start, end)` 无条件走
+         * `setSelectionRegion(...)`。而百度、搜狗移动光标时传的是**一个字符的选区**
+         * （`(pos-1, pos)` 表示「光标挪到 pos」），传进去就成了「选中一个字」。
+         * 这里先把这种形态认出来折叠成光标，其余情况照旧交给 Sora。
+         *
+         * 注意：**不能用 `[com.guaner.jsonviewer.ui.CodeEditorView.setSelectionRegion]`**，
+         * 那正是「移动光标变成选择文字」的来源。
          */
         override fun setSelection(start: Int, end: Int): Boolean {
-            if (super.setSelection(start, end)) return true
-            val content = getText()
-            val len = content.length
-            if (len == 0 || isComposing()) return false
-            val a = start.coerceIn(0, len)
-            val b = end.coerceIn(0, len)
-            val lo = minOf(a, b)
-            val hi = maxOf(a, b)
-            val startPos = content.getIndexer().getCharPosition(lo)
-            if (lo == hi) {
-                setSelection(startPos.line, startPos.column)
-            } else {
-                val endPos = content.getIndexer().getCharPosition(hi)
-                setSelectionRegion(startPos.line, startPos.column, endPos.line, endPos.column)
-            }
+            val len = getText().length
+            val caret = ImeSelection.caretIndexFor(start, end, len) ?: return super.setSelection(start, end)
+            val pos = getText().getIndexer().getCharPosition(caret)
+            this@CodeEditorView.setSelection(pos.line, pos.column)
             return true
         }
     }

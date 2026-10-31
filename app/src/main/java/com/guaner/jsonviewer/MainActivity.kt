@@ -573,11 +573,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupEditor() {
+        // 只有主编辑器允许「超长行自动折行」：值编辑面板里插换行会被当成值的一部分写回 JSON
+        binding.editorView.autoFoldEnabled = true
         // 回调不带文本：大文本下每次按键全量 toString 是主要卡顿来源，
         // 改为防抖后在 scheduleParse 里取一次快照。
         binding.editorView.onTextChanged = {
             scheduleParse()
             schedulePersist()
+        }
+        // 超长行自动折行：只插入换行符，字符偏移全变。
+        // 搜索命中和错误位置都是偏移，必须作废重算，否则会指到别的地方去
+        binding.editorView.onTextRearranged = {
+            lastError = null
+            if (binding.searchRowCode.isVisible) {
+                codeMatches = emptyList()
+                codeMatchIndex = -1
+                updateCodeSearchLabel()
+                scheduleCodeSearch()
+            }
         }
         binding.editorView.onOversize = { len ->
             toast("内容已达 ${JsonLimits.formatChars(len)}，超出安全上限，语法高亮已自动关闭")

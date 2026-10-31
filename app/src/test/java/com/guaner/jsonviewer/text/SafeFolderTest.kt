@@ -3,6 +3,7 @@ package com.guaner.jsonviewer.text
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -22,6 +23,41 @@ class SafeFolderTest {
     /** 折行只插换行，所以去掉所有换行后应与原文完全一致 */
     private fun assertSameIgnoringLineBreaks(original: String, folded: String) {
         assertEquals(original.filter { it != '\n' }, folded.filter { it != '\n' })
+    }
+
+    @Test
+    fun `folded result differs only by inserted line breaks`() {
+        val text = "{" + (1..500).joinToString(",") { "\"k$it\":$it" } + "}"
+        val result = SafeFolder.foldWithAnchor(text, threshold = 200, anchor = 10)
+        assertNotNull(result)
+        assertTrue(SafeFolder.onlyInsertedLineBreaks(text, result!!.text, result.inserted))
+        assertTrue("至少要真的插了换行", result.inserted.isNotEmpty())
+        for (i in 1 until result.inserted.size) {
+            assertTrue("插入位置必须严格递增", result.inserted[i] > result.inserted[i - 1])
+        }
+    }
+
+    @Test
+    fun `tampered text fails the content check`() {
+        val text = "{" + (1..300).joinToString(",") { "\"k$it\":$it" } + "}"
+        val result = SafeFolder.foldWithAnchor(text, threshold = 200, anchor = -1)!!
+        // 少一个字符 / 改一个字符 / 多一个字符，都应该被判为「不是只插了换行」
+        assertFalse(SafeFolder.onlyInsertedLineBreaks(text, result.text.drop(1), result.inserted))
+        assertFalse(SafeFolder.onlyInsertedLineBreaks(text, result.text + "x", result.inserted))
+        val idx = result.text.length / 2
+        val mutated = result.text.replaceRange(idx, idx + 1, "?")
+        assertFalse(SafeFolder.onlyInsertedLineBreaks(text, mutated, result.inserted))
+        // 声称的插入位置与实际不符
+        assertFalse(SafeFolder.onlyInsertedLineBreaks(text, result.text, intArrayOf(0)))
+    }
+
+    @Test
+    fun `non json text is folded too`() {
+        // 粘贴进来的未必是 JSON：一整行日志同样会拖死官方换行，也必须能折
+        val text = (1..2000).joinToString(",") { "item$it" }
+        val folded = SafeFolder.fold(text, threshold = 200)
+        assertNotNull(folded)
+        assertSameIgnoringLineBreaks(text, folded!!)
     }
 
     @Test

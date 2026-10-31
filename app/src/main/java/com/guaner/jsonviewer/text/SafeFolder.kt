@@ -26,8 +26,11 @@ object SafeFolder {
      * [anchor] 是「折行前 [anchor] 偏移的字符」在折行后文本里的位置。
      * 折行只会**插入**换行符，所以只需要把光标往后挪「插在它前面的换行数」，
      * 否则光标会停在原来那个字符的左侧，看起来就是「光标错位」。
+     *
+     * [inserted] 是每个**新插入**的换行符在 [text] 里的下标（升序），用来证明
+     * 「折行除了插换行什么都没干」（见 [onlyInsertedLineBreaks]）。
      */
-    class Result(val text: String, val anchor: Int)
+    class Result(val text: String, val anchor: Int, val inserted: IntArray)
 
     /**
      * 折行整篇文本。
@@ -49,13 +52,15 @@ object SafeFolder {
         val sb = StringBuilder(text.length + text.length / 32 + 16)
         // 已经插在 anchor 之前的换行数量
         val shift = intArrayOf(0)
+        // 新插入的换行符在结果串里的下标（升序）
+        val inserted = ArrayList<Int>(16)
         var i = 0
         val n = text.length
         while (i <= n) {
             var e = i
             while (e < n && text[e] != '\n') e++
             if (e - i > threshold) {
-                if (foldLine(text, i, e, threshold, sb, anchor, shift) > 0) changed = true
+                if (foldLine(text, i, e, threshold, sb, anchor, shift, inserted) > 0) changed = true
             } else {
                 sb.append(text, i, e)
             }
@@ -65,7 +70,37 @@ object SafeFolder {
         }
         if (!changed) return null
         val mapped = if (anchor < 0) -1 else (anchor + shift[0]).coerceIn(0, sb.length)
-        return Result(sb.toString(), mapped)
+        return Result(sb.toString(), mapped, inserted.toIntArray())
+    }
+
+    /**
+     * 校验 [after] 相对 [before] **只多出了换行符**（且多出的位置正好是 [inserted]）。
+     *
+     * 这是折行不被允许改坏内容的最后一道闸，也是最直接的一道：任何字符被改写、
+     * 被吞掉、位置被挪动，都会在这里被抓出来。
+     *
+     * 用它取代「折完必须还是合法 JSON」有两个好处：
+     * - **更快**：一次线性比对，不必把整篇文本再解析一遍（500KB 的 JSON 解析在主线程
+     *   要几百毫秒，而这里只有一次 `StringBuilder` 遍历）；
+     * - **更通用**：粘贴进来的东西未必是 JSON。非 JSON 的大段文本同样是一行长到卡死，
+     *   同样需要折行；「必须仍是合法 JSON」会把这类输入直接挡在外面。
+     *
+     * 字符串内部绝不能被插换行这件事，由 [foldLine] 的引号状态保证，这里只做兜底。
+     */
+    fun onlyInsertedLineBreaks(before: CharSequence, after: String, inserted: IntArray): Boolean {
+        if (after.length - before.length != inserted.size) return false
+        var k = 0          // inserted 的读指针
+        var b = 0          // before 的读指针
+        for (i in after.indices) {
+            if (k < inserted.size && inserted[k] == i) {
+                if (after[i] != '\n') return false
+                k++
+                continue
+            }
+            if (b >= before.length || before[b] != after[i]) return false
+            b++
+        }
+        return k == inserted.size && b == before.length
     }
 
     /**
@@ -94,7 +129,8 @@ object SafeFolder {
         threshold: Int,
         sb: StringBuilder,
         anchor: Int,
-        shift: IntArray
+        shift: IntArray,
+        inserted: MutableList<Int>
     ): Int {
         // ---- 第一遍：找断点，同时盯住「这段最后是不是还在字符串里」 ----
         val breaks = ArrayList<Int>()   // 每个元素表示：在该下标处的字符之后可以断
@@ -137,6 +173,7 @@ object SafeFolder {
         segStart = from
         for (b in breaks) {
             sb.append(text, segStart, b + 1)
+            inserted.add(sb.length)        // 这个位置之后马上插 '\n'
             sb.append('\n')
             if (anchor >= 0 && b + 1 <= anchor) shift[0]++
             segStart = b + 1

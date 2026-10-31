@@ -18,6 +18,7 @@ import io.github.rosemoe.sora.text.Content
 import io.github.rosemoe.sora.text.ContentReference
 import io.github.rosemoe.sora.text.TextRange
 import io.github.rosemoe.sora.widget.SymbolPairMatch
+import io.github.rosemoe.sora.widget.schemes.EditorColorScheme
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -478,8 +479,21 @@ class JsonSpansLanguage(
     /** 用于在高亮结束处把背景「关掉」（只设前景色，背景 0 = 透明） */
     val RESTORE_STYLE: Long = TextStyle.makeStyle(ColorIds.FLASH_TEXT)
 
-    /** 无着色行用的默认样式（前景 0 = 跟随配色方案的普通文字色） */
-    val NORMAL_STYLE: Long = TextStyle.makeStyle(0)
+    /**
+     * 普通文字的配色槽位。
+     *
+     * **绝对不能写 0**：`EditorColorScheme` 的槽位从 1 开始（`LINE_DIVIDER = 1`，
+     * `TEXT_NORMAL = 5`），内部 `colors` 是个 `SparseIntArray`，对没写过的 key
+     * `get()` 返回 **0 = 全透明**。于是「默认文字色」会变成透明色，
+     * 关掉着色（JSON 有错时）和超长行不着色这两条路径整屏的字都是被透明画没的。
+     *
+     * 写成 `const val` 是为了让编译器把它内联成字面量，避免在纯 JVM 单测里加载
+     * `EditorColorScheme` 这个类。
+     */
+    private const val COLOR_ID_TEXT_NORMAL = EditorColorScheme.TEXT_NORMAL
+
+    /** 无着色行用的默认样式（跟随配色方案的普通文字色） */
+    val NORMAL_STYLE: Long = TextStyle.makeStyle(COLOR_ID_TEXT_NORMAL)
 
     /**
      * 单行分词：规则与旧的 JsonHighlighter 一致（键 = 紧跟冒号的字符串）。
