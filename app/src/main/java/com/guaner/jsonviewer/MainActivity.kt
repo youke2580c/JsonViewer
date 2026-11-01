@@ -60,6 +60,7 @@ import com.guaner.jsonviewer.json.JsonSerializer
 import com.guaner.jsonviewer.json.ParseResult
 import com.guaner.jsonviewer.json.TreeNode
 import com.guaner.jsonviewer.json.TreeFlattener
+import com.guaner.jsonviewer.text.TextCodec
 import com.guaner.jsonviewer.theme.ThemeManager
 import com.guaner.jsonviewer.ui.BottomActionCatalog
 import com.guaner.jsonviewer.ui.HistoryDialog
@@ -2169,24 +2170,40 @@ class MainActivity : AppCompatActivity() {
             return
         }
         ThemedDialog.options(
-            this, "Unicode 转换",
-            listOf("中文 → \\uXXXX（转义）", "\\uXXXX → 中文（还原）")
+            this, "编码 / 解码",
+            listOf(
+                "中文 → \\uXXXX（Unicode 转义）",
+                "\\uXXXX → 中文（Unicode 还原）",
+                "Base64 解码（自动忽略空白字符）",
+                "URL 解码（%XX → 字符）"
+            )
         ) { which ->
-            if (which == 0) {
-                transformText("转义") { JsonSerializer.escapeUnicodeText(it) }
-            } else {
-                transformText("还原") { JsonSerializer.unescapeUnicode(it) }
+            when (which) {
+                0 -> transformText("转义") { JsonSerializer.escapeUnicodeText(it) }
+                1 -> transformText("还原") { JsonSerializer.unescapeUnicode(it) }
+                2 -> transformText(
+                    "解码",
+                    failMessage = "不是合法的 Base64，或解出的内容不是 UTF-8 文本"
+                ) { TextCodec.decodeBase64(it) }
+
+                else -> transformText("解码") { TextCodec.decodeUrlPercent(it) }
             }
         }
     }
 
     /**
-     * 对原文做纯文本变换（转义互转用）。
+     * 对原文做纯文本变换（编码解码用）。
      *
      * 不走 transformJson：那条路会先解析再重新序列化，格式会被重排；
-     * 转义应该只动字符本身，缩进和换行保持原样。
+     * 编码应该只动字符本身，缩进和换行保持原样。
+     *
+     * @param failMessage 变换返回 null 时的提示（Base64 这类可能整体失败的场景用）
      */
-    private fun transformText(label: String, transform: (String) -> String) {
+    private fun transformText(
+        label: String,
+        failMessage: String = "${label}失败",
+        transform: (String) -> String?
+    ) {
         val text = binding.editorView.text
         if (text.isBlank()) {
             toast("没有可处理的内容")
@@ -2195,6 +2212,10 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             // 几十万字符的逐字扫描放后台，避免卡主线程
             val result = withContext(Dispatchers.Default) { transform(text) }
+            if (result == null) {
+                toast(failMessage)
+                return@launch
+            }
             if (result == text) {
                 toast("内容没有变化")
                 return@launch

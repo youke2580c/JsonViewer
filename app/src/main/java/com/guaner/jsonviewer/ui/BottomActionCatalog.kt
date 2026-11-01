@@ -52,8 +52,8 @@ object BottomActionCatalog {
         BottomAction("beautify", "美化", "美化格式", "按缩进重新排版，便于阅读", R.drawable.ic_format),
         BottomAction("minify", "压缩", "压缩", "去掉多余空白，压成一行", R.drawable.ic_compress),
         BottomAction(
-            "escape", "转义", "Unicode 转换",
-            "中文与 \\uXXXX 互相转换", R.drawable.ic_escape
+            "escape", "编码", "编码解码",
+            "中文 ↔ \\uXXXX、Base64 解码、URL % 解码", R.drawable.ic_escape
         ),
         BottomAction(
             "import", "导入", "导入文件",
