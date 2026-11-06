@@ -7,8 +7,7 @@ import java.net.URLEncoder
 /**
  * 值翻译：无需任何 API Key，依次尝试两个免费公开接口。
  *
- * - 微软 Edge 翻译：先 GET `edge.microsoft.com/translate/auth` 拿临时 JWT，
- *   再调 `api.cognitive.microsofttranslator.com` 的翻译接口；国内网络可直接访问，作为默认引擎。
+ * - 微软 Edge 翻译：使用公开的 `edge.microsoft.com/translate/translatetext` 端点，无需认证，作为默认引擎。
  * - 谷歌 `translate_a/single`（client=gtx 公开接口）：作为备用，前一个失败时自动切换。
  *
  * 源文本默认翻成中文；若检测到原文本身就是中文，则自动改翻英文
@@ -31,10 +30,6 @@ object Translator {
         val sourceLength: Int
     )
 
-    /** Edge 翻译的临时凭证：有效期约 10 分钟，进程内缓存复用 */
-    @Volatile private var edgeJwt: String? = null
-    @Volatile private var edgeJwtAt = 0L
-
     /** 依次尝试 Edge -> Google；都失败时抛 [TranslateException] */
     fun translate(text: String): Result {
         val input = text.take(MAX_CHARS)
@@ -56,7 +51,7 @@ object Translator {
     // ---------- 微软 Edge ----------
 
     private fun viaEdge(input: String): Result {
-        val (detected, text) = edgeRequest(input, "zh-CN")
+        val (detected, text) = edgeRequest(input, "zh-Hans")
         if (detected.startsWith("zh", true)) {
             val (src, en) = edgeRequest(input, "en")
             return Result(en, src, "en", "微软", input.length)
@@ -64,58 +59,31 @@ object Translator {
         return Result(text, detected, "zh-CN", "微软", input.length)
     }
 
-    /** 返回 (检测到的源语言, 翻译文本)；401 时刷新凭证重试一次 */
+    /** 返回 (检测到的源语言, 翻译文本)。Edge 公开端点无需凭证。 */
     private fun edgeRequest(input: String, to: String): Pair<String, String> {
-        val resp = edgeTranslateCall(input, to, edgeAuth())
-        val final = if (resp.code == 401) {
-            edgeJwt = null
-            edgeTranslateCall(input, to, edgeAuth())
-        } else {
-            resp
+        val resp = edgeTranslateCall(input, to)
+        if (!resp.isHttpOk) {
+            throw TranslateException(resp.error ?: "翻译服务返回 ${resp.code}")
         }
-        if (!final.isHttpOk) {
-            throw TranslateException(final.error ?: "翻译服务返回 ${final.code}")
-        }
-        return parseEdge(final.body)
+        return parseEdge(resp.body)
     }
 
-    @Synchronized
-    private fun edgeAuth(): String {
-        edgeJwt?.let { cached ->
-            if (System.currentTimeMillis() - edgeJwtAt < 8 * 60_000L) return cached
-        }
-        val resp = HttpEngine.execute(
-            HttpRequest(
-                method = "GET",
-                url = "https://edge.microsoft.com/translate/auth",
-                sendReferer = false
-            ),
-            timeoutMs = 10_000
-        )
-        val token = resp.body.trim()
-        if (!resp.isHttpOk || token.isEmpty()) {
-            throw TranslateException(resp.error ?: "获取翻译凭证失败(${resp.code})")
-        }
-        edgeJwt = token
-        edgeJwtAt = System.currentTimeMillis()
-        return token
-    }
-
-    private fun edgeTranslateCall(input: String, to: String, jwt: String) =
+    /** Edge 前端公开翻译接口：请求体为纯字符串数组，不需要 Bearer Token。 */
+    private fun edgeTranslateCall(input: String, to: String) =
         HttpEngine.execute(
             HttpRequest(
                 method = "POST",
-                url = "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&to=$to",
-                headers = listOf(HttpHeader("Authorization", "Bearer $jwt")),
-                body = "[{\"Text\":\"${jsonEscape(input)}\"}]",
-                contentType = "application/json; charset=utf-8",
+                url = "https://edge.microsoft.com/translate/translatetext?from=&to=$to&isEnterpriseClient=false",
+                headers = listOf(HttpHeader("Content-type", "application/json")),
+                body = "[\"${jsonEscape(input)}\"]",
+                contentType = "application/json",
                 sendReferer = false
             )
         )
 
     /**
      * 解析微软翻译响应：
-     * `[{"detectedLanguage":{"language":"en","score":1.0},"translations":[{"text":"你好","to":"zh-CN"}]}]`
+     * `[{"detectedLanguage":{"language":"en","score":1.0},"translations":[{"text":"你好","to":"zh-Hans"}]}]`
      * 返回 (检测语言, 全部 translations.text 顺序拼接)。
      */
     private fun parseEdge(body: String): Pair<String, String> {
