@@ -1,7 +1,6 @@
 name: Android CI
 
 on:
-  workflow_dispatch:  # 允许手动触发
   push:
     branches: [ main ]
     tags: [ 'v*' ]
