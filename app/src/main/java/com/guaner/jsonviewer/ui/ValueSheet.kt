@@ -23,6 +23,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.core.widget.NestedScrollView
 import androidx.core.widget.addTextChangedListener
+import androidx.lifecycle.lifecycleScope
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
@@ -31,8 +32,13 @@ import com.guaner.jsonviewer.databinding.SheetValueBinding
 import com.guaner.jsonviewer.json.JsonLimits
 import com.guaner.jsonviewer.json.NodeType
 import com.guaner.jsonviewer.json.ValueDraft
+import com.guaner.jsonviewer.net.Translator
 import com.guaner.jsonviewer.text.TextReplacer
 import com.guaner.jsonviewer.theme.ThemeManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 值详情弹窗：查看某个节点的完整值（树里为了性能只展示前若干字符）。
@@ -111,6 +117,18 @@ class ValueSheet : BottomSheetDialogFragment() {
     private val searchHandler = Handler(Looper.getMainLooper())
     private val searchRunnable = Runnable { runValueSearch() }
 
+    // ---------- 翻译 ----------
+
+    /** 进行中的翻译请求：面板关闭/视图销毁/重新翻译时取消 */
+    private var translateJob: Job? = null
+
+    /** 最近一次成功的翻译结果；非空表示面板已有内容（退出编辑态时恢复显示） */
+    private var translateText: String? = null
+
+    /** 面板可见时压缩值区域高度，保证弹窗整体始终在屏幕内 */
+    private val viewHeightNormal get() = (360 * resources.displayMetrics.density).toInt()
+    private val viewHeightCompact get() = (240 * resources.displayMetrics.density).toInt()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         pending?.let {
@@ -156,6 +174,10 @@ class ValueSheet : BottomSheetDialogFragment() {
         binding.copyValueButton.setTextColor(ThemeManager.contrastText(colors.accent))
         binding.copyPathButton.setTextColor(colors.accent)
         binding.editValueButton.setTextColor(colors.accent)
+        binding.translateButton.setTextColor(colors.accent)
+        binding.translateStatus.setTextColor(colors.gutterText)
+        binding.translateCopy.imageTintList = accentTint
+        binding.translateClose.imageTintList = accentTint
         // 编辑框是统一编辑器：配色由它自己按主题映射，这里只触发一次应用
         binding.valueEditor.applyThemeFromManager()
         binding.resetValueButton.setTextColor(colors.gutterText)
@@ -165,6 +187,10 @@ class ValueSheet : BottomSheetDialogFragment() {
 
         // 触摸内部内容时阻止 BottomSheet 把竖向滚动误判为下拉关闭
         binding.valueScroll.setOnTouchListener { v, _ ->
+            v.parent?.requestDisallowInterceptTouchEvent(true)
+            false
+        }
+        binding.translateScroll.setOnTouchListener { v, _ ->
             v.parent?.requestDisallowInterceptTouchEvent(true)
             false
         }
@@ -199,6 +225,14 @@ class ValueSheet : BottomSheetDialogFragment() {
             onCopy?.invoke(path, "JSONPath")
         }
 
+        // 翻译：结果展示在弹窗内，可复制；关闭后恢复值区域高度
+        binding.translateButton.setOnClickListener { startTranslate() }
+        binding.translateCopy.setOnClickListener {
+            val t = translateText
+            if (t.isNullOrEmpty()) toast("还没有翻译结果") else onCopy?.invoke(t, "翻译")
+        }
+        binding.translateClose.setOnClickListener { closeTranslate() }
+
         // 值内搜索：高亮 + 上下定位（输入防抖，避免大文本逐字全量扫描卡顿）
         binding.searchInputValue.addTextChangedListener(afterTextChanged = {
             searchHandler.removeCallbacks(searchRunnable)
@@ -215,6 +249,63 @@ class ValueSheet : BottomSheetDialogFragment() {
         searchBar()
 
         setupEditing()
+    }
+
+    // ---------- 翻译 ----------
+
+    /**
+     * 翻译当前值：免费公开接口（微软 Edge 优先、谷歌备用），无需任何 Key。
+     * 结果展示在弹窗内的翻译面板，可选中/一键复制；请求走 IO 线程，UI 只做状态更新。
+     */
+    private fun startTranslate() {
+        if (shownValue.isBlank()) {
+            toast("没有可翻译的内容")
+            return
+        }
+        translateJob?.cancel()
+        translateJob = viewLifecycleOwner.lifecycleScope.launch {
+            setTranslatePanelVisible(true)
+            binding.translateStatus.text = "翻译中…"
+            binding.translateResult.text = ""
+            binding.translateCopy.isEnabled = false
+            val r = withContext(Dispatchers.IO) {
+                runCatching { Translator.translate(shownValue) }
+            }
+            if (!isAdded) return@launch
+            r.onSuccess { result ->
+                translateText = result.text
+                binding.translateResult.text = result.text
+                binding.translateScroll.scrollTo(0, 0)
+                binding.translateStatus.text = buildString {
+                    append("${result.engine} · ${result.sourceLang} → ${result.targetLang}")
+                    if (result.sourceLength < shownValue.length) {
+                        append(" · 已翻译前 ${JsonLimits.formatChars(result.sourceLength)} 字符")
+                    }
+                }
+                binding.translateCopy.isEnabled = true
+            }.onFailure { e ->
+                translateText = null
+                binding.translateResult.text = ""
+                binding.translateStatus.text = e.message ?: "翻译失败"
+                binding.translateCopy.isEnabled = false
+            }
+        }
+    }
+
+    /** 翻译面板显隐：面板出现时压缩值区域高度，保证弹窗整体始终在屏幕内 */
+    private fun setTranslatePanelVisible(visible: Boolean) {
+        binding.translatePanel.visibility = if (visible) View.VISIBLE else View.GONE
+        val lp = binding.valueScrollContainer.layoutParams
+        lp.height = if (visible) viewHeightCompact else viewHeightNormal
+        binding.valueScrollContainer.layoutParams = lp
+    }
+
+    /** 关闭翻译：取消进行中的请求、清空结果；值的翻译随值本身变化，编辑前必须先关掉旧结果 */
+    private fun closeTranslate() {
+        translateJob?.cancel()
+        translateJob = null
+        translateText = null
+        setTranslatePanelVisible(false)
     }
 
     // ---------- 编辑 ----------
@@ -342,6 +433,8 @@ class ValueSheet : BottomSheetDialogFragment() {
     }
 
     private fun beginEditing(initialText: String) {
+        // 值即将被改写，旧翻译随之失效：取消请求、隐藏面板、清空结果
+        closeTranslate()
         editing = true
         originalText = value
         originalType = valueType
@@ -751,6 +844,8 @@ class ValueSheet : BottomSheetDialogFragment() {
 
     override fun onDestroyView() {
         searchHandler.removeCallbacks(searchRunnable)
+        translateJob?.cancel()
+        translateJob = null
         super.onDestroyView()
     }
 

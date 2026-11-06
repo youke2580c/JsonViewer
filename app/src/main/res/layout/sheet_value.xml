@@ -111,6 +111,71 @@
     <include layout="@layout/view_search_options" />
     </LinearLayout>
 
+    <!-- 翻译结果：点「翻译」后展开，状态行 + 可选中复制的结果文本（内部独立滚动） -->
+    <LinearLayout
+        android:id="@+id/translatePanel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:background="@color/editor_gutter"
+        android:orientation="vertical"
+        android:paddingStart="10dp"
+        android:paddingTop="4dp"
+        android:paddingEnd="6dp"
+        android:paddingBottom="6dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/translateStatus"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:singleLine="true"
+                android:textColor="@color/json_null"
+                android:textSize="11sp" />
+
+            <ImageButton
+                android:id="@+id/translateCopy"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="复制翻译结果"
+                android:src="@drawable/ic_copy"
+                app:tint="@color/json_null" />
+
+            <ImageButton
+                android:id="@+id/translateClose"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="关闭翻译"
+                android:src="@drawable/ic_close"
+                app:tint="@color/json_null" />
+        </LinearLayout>
+
+        <androidx.core.widget.NestedScrollView
+            android:id="@+id/translateScroll"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:scrollbars="none">
+
+            <TextView
+                android:id="@+id/translateResult"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/editor_text"
+                android:textIsSelectable="true"
+                android:textSize="13sp" />
+        </androidx.core.widget.NestedScrollView>
+    </LinearLayout>
+
     <!-- 编辑态：值类型（字符串 / 数字 / 布尔 / null / 对象 / 数组），选中项由代码着色 -->
     <HorizontalScrollView
         android:id="@+id/typeRowScroll"
@@ -195,6 +260,18 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="编辑" />
+
+        <Space
+            android:layout_width="8dp"
+            android:layout_height="wrap_content" />
+
+        <Button
+            android:id="@+id/translateButton"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="翻译" />
 
         <Space
             android:layout_width="8dp"
